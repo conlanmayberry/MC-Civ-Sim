@@ -16,10 +16,13 @@
     "typecheck": "tsc --noEmit",
     "bot:probe-chat": "node tests/probe-commands.ts",
     "diagnose:movement": "node scripts/diagnose-movement.ts",
-    "diagnose:movement:live": "node scripts/diagnose-movement.ts --live"
+    "diagnose:movement:live": "node scripts/diagnose-movement.ts --live",
+    "bot:probe-path": "node tests/probe-pathfinder.ts",
+    "diagnose:pathfinder": "node scripts/diagnose-pathfinder.ts"
   },
   "dependencies": {
-    "mineflayer": "^4.39.0"
+    "mineflayer": "^4.39.0",
+    "mineflayer-pathfinder": "github:PrismarineJS/mineflayer-pathfinder"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",
