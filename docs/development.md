@@ -17,8 +17,8 @@ this table first.
 | Git | 2.53.0.windows.1 | — | ✅ |
 | Claude Code | working (desktop app) | — | ✅ |
 | winget | present | — | ✅ |
-| **JDK** | **not installed** | **25** (Paper 26.1.2 minimum) | ❌ install required |
-| **Minecraft Java client** | **not installed** | any version able to run the 26.1.2 profile | ❌ install required |
+| JDK | Temurin 25.0.4.1 LTS | 25 (Paper 26.1.2 minimum) | ✅ |
+| Minecraft Java client | 26.1.2 profile | must match server protocol 775 | ✅ |
 
 > ⚠️ **Disk pressure.** 30.7 GB free is comfortable for Stage 1 (JDK ≈ 330 MB,
 > Paper jar ≈ 55 MB, generated world a few hundred MB), but multi-day
@@ -170,3 +170,45 @@ MC-Civ-Sim/
 `src/` and `data/` do not exist yet. They are created when Stage 2 and Stage 4
 actually need them — empty directories that exist only to look like the target
 architecture are worse than no directories.
+
+---
+
+## Stage 1 verification record
+
+Completed **2026-09-06**. All five criteria passed on the baseline machine above.
+
+| # | Criterion | Evidence |
+|---|---|---|
+| 1 | JDK meets Paper's minimum | Temurin `openjdk version "25.0.4.1" 2026-08-18 LTS` |
+| 2 | Jar verified, EULA accepted, config written | 52,893,229 bytes; SHA-256 matched the pin (independently re-hashed); `eula.txt` timestamped `2026-09-06T19:58:24Z` |
+| 3 | Server boots cleanly | `Starting minecraft server version 26.1.2` / `Paper version 26.1.2-74-ver/26.1.2@e4e17fc` / `Done (42.812s)! For help, type "help"` |
+| 3a | Loopback isolation | `Starting Minecraft server on 127.0.0.1:25565` |
+| 4 | **Human joins from a Minecraft Java client** | player joined from `/127.0.0.1:57995`, spawned at overworld `(1251.5, 74.0, -245.5)` |
+| 5 | Graceful shutdown | `stop` → all three dimensions saved, `ThreadedAnvilChunkStorage: All dimensions are saved`, 2209 block chunks written in 1.74s |
+
+Log: **0 errors, 0 exceptions.** 10 warnings, all expected:
+
+- `SERVER IS RUNNING IN OFFLINE/INSECURE MODE` — intended, and the reason the
+  loopback bind is mandatory. See [ADR-002](decisions.md#adr-002--online-modefalse-paired-with-a-loopback-only-bind).
+- `you are 2 release(s) behind the latest stable release (26.2)` — intended.
+  26.2 has no `minecraft-data` entry, so Mineflayer cannot speak it. See
+  [ADR-001](decisions.md#adr-001--target-minecraft-2612-paper-build-74-not-12111).
+  Paper separately confirms `You are running the latest build for your Minecraft
+  version (26.1.2)`.
+
+First boot took ~43 s (Paper patches the vanilla jar and generates the world);
+subsequent boots are much faster. The generated world was 17 MB after a few
+minutes of play — a useful growth datapoint against the 30 GB disk headroom.
+
+### Offline-mode UUIDs are stable — this matters for Stage 4
+
+The joining player received UUID `aa260259-fb7e-32c5-a0e6-8fd1cdc7c118`. The `3`
+in the third group marks it a **version-3 (name-based) UUID**: in offline mode
+Minecraft derives it deterministically from `OfflinePlayer:<username>`, not
+randomly.
+
+Consequence for telemetry design: an agent's Minecraft UUID is a stable function
+of its username, identical across server restarts and world regenerations. Agent
+identity can therefore be keyed on username without a lookup table — but the
+corollary is that **reusing a username reuses the identity**, so experiment runs
+must namespace agent names if their event streams are to stay distinct.

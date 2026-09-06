@@ -12,10 +12,17 @@ testable system before the next begins.
 
 ---
 
-## Current stage: **Stage 1 — Minecraft server**
+## Current stage: **Stage 1 — complete ✅**
 
 A reproducible, local-only Paper server that a human can join, configured so
 Mineflayer bots will be able to connect in Stage 2.
+
+Verified 2026-09-06: server boots in 43 s on `127.0.0.1:25565`, a human joined
+from a 26.1.2 client and played, and `stop` saved all three dimensions cleanly —
+0 errors in the log. Full evidence in
+[docs/development.md](docs/development.md#stage-1-verification-record).
+
+**Next: Stage 2 — a single Mineflayer bot.**
 
 **There is no bot, no AI and no telemetry yet.** See
 [What is not implemented](#what-is-not-implemented).
@@ -109,12 +116,13 @@ the (currently non-secret) configuration.
 - Graceful save-and-stop on Ctrl-C
 - Paper update checker that reports but never auto-upgrades
 - Environment baseline and architectural decision records
+- **Stage 1 verified end-to-end** — boot, human join, graceful save-and-stop
 
 ## What is not implemented
 
 | Stage | Feature | Status |
 |---|---|---|
-| 2 | Mineflayer bot — connect, observe, chat | not started |
+| 2 | Mineflayer bot — connect, observe, chat | **next** |
 | 3 | Deterministic bot actions — mine, craft, place, move | not started |
 | 4 | Telemetry event bus + SQLite | not started |
 | 5 | Claude decision loop | not started |
