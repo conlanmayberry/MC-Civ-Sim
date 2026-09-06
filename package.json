@@ -14,7 +14,8 @@
     "bot": "node src/bot/index.ts",
     "bot:probe": "node tests/probe-version-data.ts",
     "typecheck": "tsc --noEmit",
-    "bot:probe-chat": "node tests/probe-commands.ts"
+    "bot:probe-chat": "node tests/probe-commands.ts",
+    "diagnose:movement": "node scripts/diagnose-movement.ts"
   },
   "dependencies": {
     "mineflayer": "^4.39.0"
