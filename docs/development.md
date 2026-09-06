@@ -265,12 +265,21 @@ asserting the reply format. Needs `npm run bot` already running.
 Last run 2026-09-06: **7/7 data checks, 8/8 chat cases**, including 8,125 live
 blocks decoded with zero palette inconsistencies.
 
-### Known limitation: the bot cannot walk
+### Known limitation: no pathfinding yet
 
-`bot come` does not work. The server rejects mineflayer's movement packets and
-teleports the bot back ~17 times a second; everything else is unaffected. Fully
-measured in [ADR-006](decisions.md#adr-006--bot-movement-is-blocked-upstream-stage-3-gated-on-it).
-**Stage 3 is gated on resolving it.**
+`bot come` faces the target and holds forward. That works on open ground and
+gets stuck in dense terrain — notably at world spawn, which is spruce forest
+where bots spawn in the canopy standing on leaf blocks. The bot says it is stuck
+rather than shuffling silently.
+
+Movement itself is healthy: 21 m in 5 s with zero position corrections on flat
+ground. `mineflayer-pathfinder` is Stage 3's first task. Measurements in
+[ADR-006](decisions.md#adr-006--bot-movement-misdiagnosed-as-an-upstream-blocker-it-is-terrain).
+
+```bash
+npm run diagnose:movement:live       # health check against the running world
+npm run diagnose:movement            # controlled vanilla-vs-Paper baseline
+```
 
 ### Troubleshooting
 

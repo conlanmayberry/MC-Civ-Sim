@@ -15,7 +15,8 @@
     "bot:probe": "node tests/probe-version-data.ts",
     "typecheck": "tsc --noEmit",
     "bot:probe-chat": "node tests/probe-commands.ts",
-    "diagnose:movement": "node scripts/diagnose-movement.ts"
+    "diagnose:movement": "node scripts/diagnose-movement.ts",
+    "diagnose:movement:live": "node scripts/diagnose-movement.ts --live"
   },
   "dependencies": {
     "mineflayer": "^4.39.0"

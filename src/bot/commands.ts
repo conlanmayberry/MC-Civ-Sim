@@ -136,15 +136,16 @@ export function createCommandHandler(
     followTimer = setInterval(() => {
       ticks++;
 
-      // Movement is currently blocked upstream (ADR-006): the server rejects
-      // mineflayer's movement packets and teleports the bot back. Say so
-      // quickly rather than shuffling in place until the 30s timeout -- a
-      // silent no-op is the worst way to report a known blocker.
+      // Naive "hold forward" gets stuck in terrain this has no way to route
+      // around -- notably the spruce canopy at world spawn, where the bot
+      // stands on leaves (ADR-006). Say so quickly rather than shuffling in
+      // place until the 30s timeout. Stage 3's pathfinder is the real fix.
       if (ticks === NO_MOVEMENT_CHECK_TICKS && bot.entity.position.distanceTo(origin) < 1) {
-        say('I cannot move -- the server is rejecting my movement. See docs/decisions.md ADR-006.');
+        say(`I am stuck on the terrain here and cannot reach ${targetName} without pathfinding.`);
         log.event('error', {
           where: 'follow',
-          message: 'no movement after ' + String(NO_MOVEMENT_CHECK_TICKS) + ' ticks (ADR-006)',
+          message: `stuck: no movement in ${String(NO_MOVEMENT_CHECK_TICKS)} ticks`,
+          standingOn: bot.blockAt(bot.entity.position.offset(0, -1, 0))?.name ?? 'unknown',
         });
         stopMoving(bot);
         return;

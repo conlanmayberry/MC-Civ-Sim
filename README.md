@@ -12,7 +12,7 @@ testable system before the next begins.
 
 ---
 
-## Current stage: **Stage 2 — bot connects and observes ⚠️**
+## Current stage: **Stage 2 — complete ✅**
 
 One Mineflayer bot that connects, observes the world, and answers chat commands.
 No AI yet — that is Stage 5.
@@ -21,11 +21,11 @@ Working and verified: connection with bounded reconnect, chat commands,
 observations (position, health, inventory, entities, blocks), structured event
 logging, and two probes (7/7 data checks, 8/8 chat cases).
 
-⚠️ **The bot cannot walk.** The server rejects mineflayer's movement packets and
-teleports it back ~17×/second. The bot is behaving correctly at the protocol
-level; this is an upstream problem, fully measured in
-[ADR-006](docs/decisions.md#adr-006--bot-movement-is-blocked-upstream-stage-3-gated-on-it).
-**Stage 3 is gated on it**, since Stage 3 is entirely about actions.
+Movement works — 21 m in 5 seconds with zero position corrections on open
+ground. It is poor in dense forest, which is simply what walking without a
+pathfinder looks like; `mineflayer-pathfinder` is Stage 3's first task. The
+spawn area happens to be spruce canopy, which is the worst case for it, so judge
+movement on open ground too ([ADR-006](docs/decisions.md#adr-006--bot-movement-misdiagnosed-as-an-upstream-blocker-it-is-terrain)).
 
 **There is no AI and no telemetry database yet.** See
 [What is not implemented](#what-is-not-implemented).
@@ -111,6 +111,13 @@ Drive every chat command as a second player and assert the replies:
 npm run bot:probe-chat
 ```
 
+Measure movement health against the running world (~21 m and 0 corrections is
+healthy; see [ADR-006](docs/decisions.md#adr-006--bot-movement-misdiagnosed-as-an-upstream-blocker-it-is-terrain)):
+
+```bash
+npm run diagnose:movement:live
+```
+
 Type-check (there is no build step — see
 [ADR-004](docs/decisions.md#adr-004--no-build-step-node-runs-typescript-natively)):
 
@@ -162,8 +169,8 @@ the (currently non-secret) configuration.
 
 | Stage | Feature | Status |
 |---|---|---|
-| 2 | Mineflayer bot — connect, observe, chat | **done, except movement** |
-| 3 | Deterministic bot actions — mine, craft, place, move | **blocked by [ADR-006](docs/decisions.md#adr-006--bot-movement-is-blocked-upstream-stage-3-gated-on-it)** |
+| 2 | Mineflayer bot — connect, observe, chat | **done** |
+| 3 | Deterministic bot actions — mine, craft, place, move | **next** (start with pathfinder) |
 | 4 | Telemetry event bus + SQLite | not started |
 | 5 | Claude decision loop | not started |
 | 6 | Agent identity and goals | not started |

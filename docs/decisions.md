@@ -242,88 +242,85 @@ is prior knowledge the agent is supposed to discover (principle 8).
 
 ---
 
-## ADR-006 — Bot movement is blocked upstream; Stage 3 gated on it
+## ADR-006 — Bot movement: misdiagnosed as an upstream blocker; it is terrain
 
 **Date:** 2026-09-06 (Stage 2)
-**Status:** **open problem** — recorded, not resolved
+**Status:** **resolved** — supersedes this ADR's own first conclusion
 
-A Mineflayer bot cannot walk on our Paper 26.1.2 server. Everything else in
-Stage 2 works. This blocks the "can move" item in Stage 2 and all of Stage 3.
+### Correction
 
-### What was measured
+This ADR originally concluded that mineflayer could not move a player on Paper
+26.1.2, that the fault was upstream, and that Stage 3 was gated on someone else
+fixing it. **That was wrong**, and the reasoning error is worth recording because
+it is easy to repeat: every measurement came from a single spawn point, so
+"the bot cannot move" and "the bot cannot move *here*" were indistinguishable in
+the data, and the more dramatic reading got written down as fact.
 
-The bot is behaving correctly; the server refuses its movement.
+A controlled experiment settled it. `npm run diagnose:movement` runs the same
+measurement against vanilla and Paper on freshly generated **superflat** worlds,
+holding version, Java, mineflayer and config constant:
 
-| Measurement | Result |
-|---|---|
-| `physicsTick` events over 5s | **100** — exactly the expected 20/s |
-| Packets sent while walking (5s) | `position_look` ×125, `teleport_confirm` ×63, `flying` ×62 |
-| `player_loaded` sent | yes |
-| Server position corrections — **idle** | **0** |
-| Server position corrections — **walking** | **85 in 5s** (~17/s) |
-| Correction contents | absolute, incrementing `teleportId`, all relative-flags false |
-| Net movement | ~0.004 blocks/tick, snapped back each time |
-| Server log warnings | none — no "moved wrongly", no "moved too quickly" |
+| Server | Moved in 5s | Corrections while walking | Physics ticks |
+|---|---|---|---|
+| Vanilla 26.1.2 | **21.33 m** | **0** | 100 |
+| Paper 26.1.2-74 | **21.11 m** | **0** | 99 |
 
-Idle = 0 corrections and walking = 85 is the decisive pair. The connection is
-healthy, the bot is fully loaded, and the server is content until the bot tries
-to move. A **human player moves normally on this same server**, so the server is
-not at fault either.
+Both walk perfectly. Mineflayer, Paper and Minecraft 26.1.2 are all fine.
 
-### What it is not
+### The actual cause
 
-Ruled out by experiment, so nobody re-treads this:
+`npm run diagnose:movement:live` reproduces the failure on `civ-sim-world`, and
+varying only the bot's footing explains all of it:
 
-- **Not our code.** A bare `mineflayer.createBot` with `setControlState('forward', true)`
-  and no project code reproduces it exactly.
-- **Not `player_loaded`.** `supportFeature('sendsPlayerLoadedPacket')` is true for
-  26.1 and the packet is sent.
-- **Not the block palette.** `npm run bot:probe` decodes 8,125 live blocks with
-  zero inconsistencies.
-- **Not terrain.** Reproduced on flat `grass_block` as well as in tree canopy.
-- **Not physics stalling.** Physics ticks at the correct rate.
-- **Not the attribute defect below.** Injecting the missing attribute by hand
-  changes nothing.
-- **Probably not fixed by downgrading.** The serverbound *and* clientbound
-  movement packet schemas are byte-identical across 1.21.8, 1.21.9, 1.21.11 and
-  26.1, so 26.1 is unlikely to be special here.
+| Standing on | Moved in 5s | Corrections |
+|---|---|---|
+| `spruce_leaves` (canopy, y≈83) | 1.20 m | 71 |
+| `grass_block` (forest floor, y≈74) | 6.88 m | 52 |
+| flat ground (superflat baseline) | 21.33 m | 0 |
 
-### A second, independent defect found on the way
+`civ-sim-world`'s spawn sits in a **dense spruce forest, and bots spawn in the
+canopy** — standing on leaf blocks, metres above the ground, boxed in by trunks
+and foliage. It is close to the worst possible terrain for a naive
+"face the target and hold forward" walk, which is exactly what Stage 2's
+`bot come` is. The bot walks into a trunk or off a leaf platform, its physics
+and the server's diverge, and the server corrects it.
 
-`minecraft-data`'s protocol schema for the attribute packet is **wrong**, and
-identically so on 1.21.9, 1.21.11 and 26.1:
-
-- The schema's ID→name mapping has **31 entries**; the real attribute registry
-  has **35**.
-- Four attributes are missing from the schema: `mining_efficiency`,
-  `movement_efficiency`, `oxygen_bonus`, `sneaking_speed`.
-- Everything from index 20 is therefore shifted. Index 22 is `movement_speed`,
-  but the schema labels it `generic.scale` — which is why the bot reports a
-  nonsensical `generic.scale = 0.1` (0.1 being the vanilla default *movement
-  speed*).
-- `prismarine-physics` looks up `minecraft:movement_speed` and never finds it,
-  falling back to a built-in default.
-
-This is a genuine bug worth reporting upstream, but it is **not** the cause of
-the movement failure — physics degrades gracefully when the attribute is absent,
-and injecting it by hand does not restore movement.
+The human operator confirms `bot come` works in practice when the bot is
+somewhere it can actually walk.
 
 ### Consequence
 
-Stage 2 ships with everything except reliable movement. `bot come` is
-implemented and correct; it detects that it is not moving and says so within
-~3 seconds rather than failing silently.
+**Stage 3 is not blocked.** Movement works; naive movement is simply bad at
+dense forest, which is the ordinary case for having no pathfinder.
+`mineflayer-pathfinder` is Stage 3's first task and is the correct fix — it
+computes walkable routes, handles jumps and step-ups, and avoids the divergence
+that produces these corrections.
 
-**Stage 3 must not start until this is resolved** — it is entirely about
-actions (mine, craft, place, move), and a bot that cannot move cannot do them.
+Two smaller consequences:
 
-### Next steps, in order of cost
+- Judge Stage 3 movement work on **open ground** as well as at spawn, or terrain
+  difficulty will keep masquerading as a bug.
+- `npm run diagnose:movement:live` is the standing regression check. Superflat
+  gives ~21 m and 0 corrections; anything near that is healthy.
 
-1. Report both defects upstream to PrismarineJS with the measurements above.
-2. Test against a **vanilla** Minecraft server rather than Paper, to establish
-   whether Paper's movement validation is involved.
-3. Test an older Minecraft version end to end (1.21.8 or 1.21.4). This needs a
-   second Paper jar, a fresh EULA acceptance and a regenerated world, so it is
-   an operator decision, not an automatic fallback.
-4. If a specific older version works, revise [ADR-001](#adr-001--target-minecraft-2612-paper-build-74-not-12111)
-   and change the pin.
+### A real, separate defect found on the way
+
+Independent of the above, `minecraft-data`'s protocol schema for the attribute
+packet is **wrong**, identically on 1.21.9, 1.21.11 and 26.1:
+
+- The schema's ID→name mapping has **31 entries**; the real attribute registry
+  has **35**.
+- Missing from the schema: `mining_efficiency`, `movement_efficiency`,
+  `oxygen_bonus`, `sneaking_speed`.
+- Everything from index 20 is therefore shifted. Index 22 is `movement_speed`,
+  but the schema labels it `generic.scale` — which is why a bot reports a
+  nonsensical `generic.scale = 0.1` (0.1 being the vanilla default *movement
+  speed*).
+- `prismarine-physics` looks up `minecraft:movement_speed`, never finds it, and
+  falls back to a built-in default.
+
+This is genuinely worth reporting upstream to PrismarineJS. It is **not** the
+cause of anything above: physics degrades gracefully when the attribute is
+absent, injecting it by hand changes nothing, and bots walk at full speed on
+flat ground regardless. It will start to matter when agents need accurate speed
+under status effects, sprinting or soul sand.

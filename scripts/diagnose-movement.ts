@@ -42,6 +42,14 @@ const VANILLA = {
   // From Mojang's own version manifest for 26.1.2, fetched 2026-09-06.
 };
 
+/**
+ * `--live` measures the ALREADY-RUNNING civ-sim-world server instead of
+ * creating temporary ones. Nothing is downloaded, no server is started or
+ * stopped, and no EULA prompt is needed -- so it is safe to run at any time.
+ */
+const LIVE_ONLY = process.argv.includes('--live');
+const LIVE_PORT = Number(process.env['MC_PORT'] ?? 25565);
+
 const BOOT_TIMEOUT_MS = 180_000;
 const WALK_SECONDS = 5;
 const MC_VERSION = '26.1.2';
@@ -287,6 +295,41 @@ async function run(target: Target): Promise<Result> {
 // --- main ---------------------------------------------------------------
 
 console.log('');
+
+if (LIVE_ONLY) {
+  console.log(`${BOLD}  ADR-006 movement diagnosis${RESET}  live civ-sim-world server`);
+  console.log(`  ${DIM}measuring 127.0.0.1:${LIVE_PORT} -- nothing is created or changed${RESET}`);
+  console.log('');
+
+  const live = await measureMovement({
+    name: 'civ-sim-world',
+    jar: '',
+    port: LIVE_PORT,
+    dir: '',
+  });
+
+  if (live.error !== undefined) {
+    console.log(`  ${RED}failed: ${live.error}${RESET}`);
+    console.log(`  ${DIM}is the server running? npm run minecraft${RESET}`);
+    console.log('');
+    process.exit(1);
+  }
+
+  const walks = live.movedBlocks > 3;
+  console.log(`  moved            ${(walks ? GREEN : RED)}${live.movedBlocks.toFixed(2)}m${RESET} in ${WALK_SECONDS}s`);
+  console.log(`  corrections      ${live.correctionsWalking} while walking, ${live.correctionsIdle} while idle`);
+  console.log(`  physics ticks    ${live.physicsTicks} ${DIM}(expect ~${WALK_SECONDS * 20})${RESET}`);
+  console.log('');
+  console.log(
+    walks
+      ? `  ${GREEN}${BOLD}The bot walks here.${RESET} Compare against the superflat baseline.`
+      : `  ${RED}${BOLD}The bot cannot walk here${RESET}, but it can on a superflat world --
+  so this is specific to this world, not to mineflayer or Paper.`,
+  );
+  console.log('');
+  process.exit(walks ? 0 : 1);
+}
+
 console.log(`${BOLD}  ADR-006 movement diagnosis${RESET}  vanilla vs Paper, identical superflat worlds`);
 console.log('');
 
