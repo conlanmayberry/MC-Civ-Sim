@@ -1,0 +1,35 @@
+{
+  "//": [
+    "Type-CHECKING only -- this project has no build step. Node 26 runs .ts files",
+    "natively by stripping types, so `node src/bot/index.ts` is the real entry",
+    "point and tsc never emits. See docs/decisions.md ADR-004.",
+    "",
+    "Two settings carry that decision:",
+    "  allowImportingTsExtensions -- Node requires explicit .ts on relative",
+    "    imports; './x.js' and './x' both fail at runtime.",
+    "  erasableSyntaxOnly -- rejects enum/namespace/parameter-properties, which",
+    "    Node cannot strip. Without this the type-checker would happily accept",
+    "    code that throws the moment it runs."
+  ],
+  "compilerOptions": {
+    "target": "es2024",
+    "lib": ["ES2024"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}

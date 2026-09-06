@@ -19,6 +19,11 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 
+// Node 26 runs TypeScript natively, so this .mjs infrastructure script can share
+// the application's env reader rather than keeping a second copy in sync.
+// See docs/decisions.md ADR-004.
+import { loadEnvFile } from '../src/config.ts';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SERVER_DIR = path.join(ROOT, 'minecraft', 'server');
 const PIN_FILE = path.join(ROOT, 'minecraft', 'config', 'paper-version.json');
@@ -64,28 +69,8 @@ async function exists(p) {
   }
 }
 
-/**
- * Minimal .env reader -- enough for MC_PORT and the memory settings, and not
- * worth a dependency at this stage. Real values live in .env; .env.example
- * documents them.
- */
-async function loadEnvFile() {
-  const file = path.join(ROOT, '.env');
-  if (!(await exists(file))) return {};
-
-  const out = {};
-  for (const raw of (await fs.readFile(file, 'utf8')).split('\n')) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq === -1) continue;
-    out[line.slice(0, eq).trim()] = line.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
-  }
-  return out;
-}
-
 const pin = JSON.parse(await fs.readFile(PIN_FILE, 'utf8'));
-const env = { ...(await loadEnvFile()), ...process.env };
+const env = { ...loadEnvFile(ROOT), ...process.env };
 
 const jar = path.join(SERVER_DIR, pin.jarName);
 const eula = path.join(SERVER_DIR, 'eula.txt');

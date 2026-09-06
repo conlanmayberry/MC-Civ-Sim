@@ -12,19 +12,22 @@ testable system before the next begins.
 
 ---
 
-## Current stage: **Stage 1 — complete ✅**
+## Current stage: **Stage 2 — bot connects and observes ⚠️**
 
-A reproducible, local-only Paper server that a human can join, configured so
-Mineflayer bots will be able to connect in Stage 2.
+One Mineflayer bot that connects, observes the world, and answers chat commands.
+No AI yet — that is Stage 5.
 
-Verified 2026-09-06: server boots in 43 s on `127.0.0.1:25565`, a human joined
-from a 26.1.2 client and played, and `stop` saved all three dimensions cleanly —
-0 errors in the log. Full evidence in
-[docs/development.md](docs/development.md#stage-1-verification-record).
+Working and verified: connection with bounded reconnect, chat commands,
+observations (position, health, inventory, entities, blocks), structured event
+logging, and two probes (7/7 data checks, 8/8 chat cases).
 
-**Next: Stage 2 — a single Mineflayer bot.**
+⚠️ **The bot cannot walk.** The server rejects mineflayer's movement packets and
+teleports it back ~17×/second. The bot is behaving correctly at the protocol
+level; this is an upstream problem, fully measured in
+[ADR-006](docs/decisions.md#adr-006--bot-movement-is-blocked-upstream-stage-3-gated-on-it).
+**Stage 3 is gated on it**, since Stage 3 is entirely about actions.
 
-**There is no bot, no AI and no telemetry yet.** See
+**There is no AI and no telemetry database yet.** See
 [What is not implemented](#what-is-not-implemented).
 
 | Target | Version | Why |
@@ -82,13 +85,44 @@ npm run minecraft:check-latest
 
 ## Starting the bot
 
-Not implemented — Stage 2.
+With the server already running in another terminal:
+
+```bash
+npm run bot
+```
+
+Say `bot help` in Minecraft chat. Commands: `status`, `inventory` (`inv`),
+`look`, `who`, `come`, `stop`, `quit`, `help`.
+
+`bot quit` in chat and Ctrl-C are both hard stops — neither reconnects.
+
+## Running the probes
+
+Check that `minecraft-data` actually matches the running server (registries,
+recipes, and a decode of ~8,000 live blocks against the block-state palette):
+
+```bash
+npm run bot:probe
+```
+
+Drive every chat command as a second player and assert the replies:
+
+```bash
+npm run bot:probe-chat
+```
+
+Type-check (there is no build step — see
+[ADR-004](docs/decisions.md#adr-004--no-build-step-node-runs-typescript-natively)):
+
+```bash
+npm run typecheck
+```
 
 ## Running tests
 
-No test suite yet. Stage 1 is verified manually against the checklist in
-[docs/development.md](docs/development.md); automated tests arrive with the
-first real logic in Stage 3.
+No unit-test suite yet — the two probes above are connected diagnostics, which
+is the right shape for a project whose failure modes are all integration-level.
+Unit tests arrive in Stage 3 with the first logic worth isolating.
 
 ## Inspecting telemetry
 
@@ -117,13 +151,19 @@ the (currently non-secret) configuration.
 - Paper update checker that reports but never auto-upgrades
 - Environment baseline and architectural decision records
 - **Stage 1 verified end-to-end** — boot, human join, graceful save-and-stop
+- One bot: connect, reconnect with capped exponential backoff, kill switch
+- Pure, bounded, serialisable observations ([ADR-005](docs/decisions.md#adr-005--observations-are-pure-serialisable-and-bounded))
+- Allowlisted chat commands with outgoing-chat rate limiting
+- Event-shaped structured logging, ready to be pointed at SQLite in Stage 4
+- TypeScript with no build step ([ADR-004](docs/decisions.md#adr-004--no-build-step-node-runs-typescript-natively))
+- Two probes: `bot:probe` (data correctness) and `bot:probe-chat` (command replies)
 
 ## What is not implemented
 
 | Stage | Feature | Status |
 |---|---|---|
-| 2 | Mineflayer bot — connect, observe, chat | **next** |
-| 3 | Deterministic bot actions — mine, craft, place, move | not started |
+| 2 | Mineflayer bot — connect, observe, chat | **done, except movement** |
+| 3 | Deterministic bot actions — mine, craft, place, move | **blocked by [ADR-006](docs/decisions.md#adr-006--bot-movement-is-blocked-upstream-stage-3-gated-on-it)** |
 | 4 | Telemetry event bus + SQLite | not started |
 | 5 | Claude decision loop | not started |
 | 6 | Agent identity and goals | not started |

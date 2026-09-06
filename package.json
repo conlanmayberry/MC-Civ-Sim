@@ -10,6 +10,17 @@
   "scripts": {
     "minecraft:setup": "node scripts/setup-paper.mjs",
     "minecraft:check-latest": "node scripts/setup-paper.mjs --check-latest",
-    "minecraft": "node scripts/start-server.mjs"
+    "minecraft": "node scripts/start-server.mjs",
+    "bot": "node src/bot/index.ts",
+    "bot:probe": "node tests/probe-version-data.ts",
+    "typecheck": "tsc --noEmit",
+    "bot:probe-chat": "node tests/probe-commands.ts"
+  },
+  "dependencies": {
+    "mineflayer": "^4.39.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "typescript": "^7.0.2"
   }
 }

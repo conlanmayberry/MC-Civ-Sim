@@ -212,3 +212,75 @@ of its username, identical across server restarts and world regenerations. Agent
 identity can therefore be keyed on username without a lookup table — but the
 corollary is that **reusing a username reuses the identity**, so experiment runs
 must namespace agent names if their event streams are to stay distinct.
+
+---
+
+## Stage 2 — running the bot
+
+The Paper server must be running first (`npm run minecraft`, separate terminal).
+
+```bash
+npm run bot
+```
+
+Then say `bot help` in Minecraft chat. Commands: `status`, `inventory` (`inv`),
+`look`, `who`, `come`, `stop`, `quit`, `help`.
+
+Stop it with `bot quit` in chat or Ctrl-C. Both are hard stops — neither
+reconnects.
+
+### TypeScript with no build step
+
+Node 26 runs `.ts` files directly, so there is nothing to compile. Two rules
+follow from that ([ADR-004](decisions.md#adr-004--no-build-step-node-runs-typescript-natively)):
+
+1. **Relative imports need the `.ts` extension** — `./config.ts`, not
+   `./config.js` or `./config`. The other two fail at runtime.
+2. **No `enum`, `namespace`, or parameter properties.** They need code
+   generation, which type stripping does not do.
+
+`npm run typecheck` enforces both (`erasableSyntaxOnly`), so run it before
+committing. It is the only thing standing between you and a runtime crash on
+otherwise valid-looking TypeScript.
+
+### Probes
+
+```bash
+npm run bot:probe
+```
+
+Checks that `minecraft-data`'s 26.1 dataset actually matches the 26.1.2 server —
+registries, name/id round-trips, recipes, and a decode of ~8,000 live blocks
+against the block-state palette. This is the standing answer to
+[ADR-001](decisions.md#adr-001--target-minecraft-2612-paper-build-74-not-12111);
+re-run it after any version change.
+
+```bash
+npm run bot:probe-chat
+```
+
+Joins as a second player and drives the bot through every chat command,
+asserting the reply format. Needs `npm run bot` already running.
+
+Last run 2026-09-06: **7/7 data checks, 8/8 chat cases**, including 8,125 live
+blocks decoded with zero palette inconsistencies.
+
+### Known limitation: the bot cannot walk
+
+`bot come` does not work. The server rejects mineflayer's movement packets and
+teleports the bot back ~17 times a second; everything else is unaffected. Fully
+measured in [ADR-006](decisions.md#adr-006--bot-movement-is-blocked-upstream-stage-3-gated-on-it).
+**Stage 3 is gated on resolving it.**
+
+### Troubleshooting
+
+**`duplicate_login` kick loop** — two bot processes are sharing a username.
+Killing an `npm run bot` wrapper can leave the `node` child alive; check with
+`Get-CimInstance Win32_Process -Filter "Name='node.exe'"` and stop the orphan.
+
+**Bot exits immediately instead of reconnecting** — should not happen now, but
+it is what an accidentally `unref()`'d retry timer looks like. The retry timer
+is the only thing holding the event loop open while the server is down.
+
+**Chat replies intermittently missing** — almost always the duplicate-login loop
+above rather than a chat problem.
