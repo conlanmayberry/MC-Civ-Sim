@@ -28,6 +28,12 @@ export interface ConnectionHandlers {
    */
   onSpawn?: (bot: Bot) => void;
   onChat?: (bot: Bot, username: string, message: string) => void;
+  /**
+   * Called at the start of an intentional stop, while the bot is still
+   * connected. The last chance to read live state -- by `onStopped` the socket
+   * is closed and the entity is gone.
+   */
+  onStopping?: (bot: Bot) => void;
   /** Called once, when the session is finished and will not reconnect. */
   onStopped?: (reason: string) => void;
 }
@@ -67,6 +73,11 @@ export function connect(
     clearStabilityTimer();
 
     if (current !== null) {
+      try {
+        handlers.onStopping?.(current);
+      } catch {
+        // A telemetry failure must not prevent the bot from stopping.
+      }
       try {
         current.quit(reason);
       } catch {

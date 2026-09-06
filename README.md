@@ -12,7 +12,7 @@ testable system before the next begins.
 
 ---
 
-## Current stage: **Stage 3 — code complete, blocked on movement ⚠️**
+## Current stage: **Stage 4 — telemetry ✅** (Stage 3 blocked on movement ⚠️)
 
 One bot that connects, observes, obeys chat commands, and has a full
 deterministic action layer — mine, craft, place, move, eat, collect. No AI yet;
@@ -29,7 +29,12 @@ terrain while 1.21.8 wedges 0/3 — an upstream regression
 a defect here. The decision costs a regenerated world, so it is the operator's:
 see [ADR-008](docs/decisions.md#adr-008--stage-3-is-code-complete-but-cannot-be-demonstrated-on-2612).
 
-Stage 4 (telemetry) does not depend on movement and could proceed meanwhile.
+**Stage 4 is done.** Every event and periodic state snapshot is recorded to
+SQLite via `node:sqlite` — no dependency, no native module
+([ADR-009](docs/decisions.md#adr-009--telemetry-uses-nodesqlite-not-better-sqlite3)).
+Telemetry did not require changing a single existing call site: the logger was
+shaped for this in Stage 2, so it was a sink swap. See
+[docs/architecture.md](docs/architecture.md).
 
 **There is no AI and no telemetry database yet.** See
 [What is not implemented](#what-is-not-implemented).
@@ -161,7 +166,18 @@ world reasons.
 
 ## Inspecting telemetry
 
-Not implemented — Stage 4. There is no database yet.
+```bash
+npm run telemetry                 # runs, agents, event counts
+npm run telemetry timeline 40     # what happened, in order, with locations
+npm run telemetry actions         # attempts, success rate, durations
+npm run telemetry errors          # failures grouped by error code
+npm run telemetry inventory       # state snapshots over time
+npm run telemetry sql "SELECT ..."
+```
+
+The database lives at `data/database/telemetry.sqlite` (git-ignored) and is
+written while the bot runs. WAL means you can query it mid-run without blocking
+anything.
 
 ## Security posture
 
@@ -192,6 +208,7 @@ the (currently non-secret) configuration.
 - Event-shaped structured logging, ready to be pointed at SQLite in Stage 4
 - TypeScript with no build step ([ADR-004](docs/decisions.md#adr-004--no-build-step-node-runs-typescript-natively))
 - Two probes: `bot:probe` (data correctness) and `bot:probe-chat` (command replies)
+- SQLite telemetry: events + snapshots, batched, WAL, with a query CLI
 
 ## What is not implemented
 
@@ -199,7 +216,7 @@ the (currently non-secret) configuration.
 |---|---|---|
 | 2 | Mineflayer bot — connect, observe, chat | **done** |
 | 3 | Deterministic bot actions — mine, craft, place, move | **code complete, blocked** ([ADR-008](docs/decisions.md#adr-008--stage-3-is-code-complete-but-cannot-be-demonstrated-on-2612)) |
-| 4 | Telemetry event bus + SQLite | not started — does not depend on movement |
+| 4 | Telemetry event bus + SQLite | **done** |
 | 5 | Claude decision loop | not started |
 | 6 | Agent identity and goals | not started |
 | 7 | Persistent agent memory | not started |

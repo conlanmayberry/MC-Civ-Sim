@@ -435,3 +435,49 @@ Stage 3 cannot be signed off until one of:
    later stage that assumes agents can travel.
 
 Recorded rather than chosen: it costs the operator a world.
+
+---
+
+## ADR-009 — Telemetry uses `node:sqlite`, not `better-sqlite3`
+
+**Date:** 2026-09-06 (Stage 4)
+**Status:** accepted
+
+The event store uses **`node:sqlite`**, built into Node 26 and no longer
+flagged experimental. Verified working before adopting it: prepared statements,
+WAL, transactions, `json_each`, `json_extract`, read-only handles.
+
+The plan had assumed `better-sqlite3` (13.0.3). It is excellent and remains the
+better choice on older Node — but it is a **native module**, and that is the
+whole argument:
+
+- It compiles on install, so the project stops being installable whenever a
+  prebuilt binary lags a Node release. This repository is meant to be
+  reproducible on a fresh machine years from now.
+- Stage 2 lost hours to a stale-data dependency. Adding a compiled dependency to
+  the critical path of the thing that *records the research output* is the worst
+  place to accept that risk.
+- The telemetry write path is a few prepared statements in a batch. The
+  performance difference does not arise.
+
+This keeps the project at **one runtime dependency** — mineflayer, plus
+pathfinder from git — with everything infrastructural using the standard
+library. Consistent with the no-build-step decision in ADR-004 and the
+no-dotenv, no-test-framework choices before it.
+
+### Revisit if
+
+We need to support Node < 22, or we need something `node:sqlite` lacks
+(user-defined functions, extensions like FTS5 or sqlite-vec). Stage 7's memory
+retrieval is the plausible trigger: if semantic search later wants FTS5 or a
+vector extension, that is a real reason to change, and the store is behind a
+small interface (`openStore`) precisely so it can be.
+
+### Consequence worth recording
+
+`node:sqlite` refuses to bind `undefined`, and the bot legitimately has
+undefined fields at lifecycle edges — mineflayer fires `spawn` from a handler
+registered *before* the one that assigns `bot.health`, so health is genuinely
+unset at that instant. The store therefore coerces non-finite values to NULL
+rather than letting a partial row destroy a whole snapshot, and the spawn
+snapshot is taken a second late so it captures real values.
