@@ -324,3 +324,114 @@ cause of anything above: physics degrades gracefully when the attribute is
 absent, injecting it by hand changes nothing, and bots walk at full speed on
 flat ground regardless. It will start to matter when agents need accurate speed
 under status effects, sprinting or soul sand.
+
+
+---
+
+## ADR-007 — Actions are typed results, never exceptions
+
+**Date:** 2026-09-06 (Stage 3)
+**Status:** accepted
+
+Every action returns an `ActionResult` (see
+[src/bot/actions/types.ts](../src/bot/actions/types.ts)):
+
+```ts
+{ ok, action, durationMs, detail, error?: { code, message } }
+```
+
+Enforced centrally by `runAction` in
+[src/bot/actions/run.ts](../src/bot/actions/run.ts), so the rules hold by
+construction rather than by everyone remembering them:
+
+1. **Never throw.** A failure is a value.
+2. **Always time-bounded.** Every action takes a timeout and returns `timeout`.
+3. **Serialisable `detail`.** No Vec3/Block/Item/Entity, same rule as ADR-005.
+4. **One at a time.** A mutex; concurrent callers get `interrupted`.
+5. **One telemetry event per action**, success or failure.
+
+### Why failures are values
+
+Stage 5 hands these to Claude as tool results. A model that receives an
+exception sees nothing and its agent loop dies; a model that receives
+`{ ok: false, error: { code: 'no_tool' } }` can go and find a pickaxe. The
+same object is what Stage 4 writes to SQLite.
+
+### Why the codes are a closed union
+
+`ActionErrorCode` is nine fixed values, not free text, because Stage 4 will
+aggregate them ("how often do agents fail as `unreachable`?") and Stage 5 will
+branch on them. Neither is possible over message strings. Specifics live in
+`message`; the category lives in `code`.
+
+### Consequences already visible
+
+`mine_block` distinguishes `not_found`, `unreachable`, `no_tool` and `blocked`
+where a boolean would have said only "failed". The `no_tool` case is the
+clearest win: mining stone bare-handed *succeeds* and drops nothing, which
+teaches an agent something false about the world. Refusing with a reason is
+better than a hollow success.
+
+---
+
+## ADR-008 — Stage 3 is code-complete but cannot be demonstrated on 26.1.2
+
+**Date:** 2026-09-06 (Stage 3)
+**Status:** **open decision for the operator**
+
+The Stage 3 action layer is written, type-checked and unit-tested (15/15). The
+brief's success criterion -- gather wood, craft, place, move, eat -- **cannot be
+demonstrated on our 26.1.2 world**, because pathfinding does not work in real
+terrain. This is not a code defect in this repository.
+
+### Evidence
+
+Controlled 2x2 benchmark (`npm run diagnose:pathfinder`), temporary servers,
+identical settings, three `goto` attempts at ~15m:
+
+| version | world | reached | wedged |
+|---|---|---|---|
+| 26.1.2 | superflat | 3/3 | 0 |
+| **26.1.2** | **normal** | **0/3** | **3** |
+| 1.21.8 | superflat | 3/3 | 0 |
+| **1.21.8** | **normal** | **1/3** | **0** |
+
+Pathfinding works fine on flat ground on both versions, so neither the library
+nor our integration is fundamentally broken. On normal terrain, 26.1.2 **wedges
+every time** and 1.21.8 **never** does. That is
+[mineflayer-pathfinder#366](https://github.com/PrismarineJS/mineflayer-pathfinder/issues/366)
+("stuck behind every 1-block obstacle, walking into it instead of jumping",
+1.21.10/1.21.11/26.2 broken, 1.21.8 working), isolated to the version.
+
+The distinction that matters is *how* they fail. A wedge hangs forever;
+`goto` never settles. A clean failure returns and can be retried -- so on
+1.21.8 our retry logic compounds a 1/3 per-attempt rate into roughly 80% over
+four attempts, while on 26.1.2 retries measurably do not help.
+
+### Workarounds tried, and why each was insufficient
+
+| Attempt | Result |
+|---|---|
+| Wedge detector (abort on "moving but not moving") | **Kept.** Converts an unrecoverable hang into a typed `unreachable` in ~2.4s. Necessary, not sufficient. |
+| Retry with a fresh path, plus a jump-and-turn nudge | Kept. Still wedged after 4 attempts. |
+| Try the 12 nearest candidate blocks, not just the closest | Kept -- better in general. All 12 logs still unreachable. |
+| [PR #364](https://github.com/PrismarineJS/mineflayer-pathfinder/pull/364) hitbox patch (`playerHalfWidth` 0.3 → 0.30001) | **Not adopted.** It does stop the wedging, which supports its float-boundary diagnosis, but the bot still never arrives -- it now burns the full timeout making partial progress. Against our wedge detector that trades a 2.4s clean failure for a 25s one. |
+
+The first three are genuine improvements and are kept regardless of what is
+decided below.
+
+### The decision
+
+Stage 4 (telemetry) does **not** depend on movement and could proceed now.
+Stage 3 cannot be signed off until one of:
+
+1. **Move to Minecraft 1.21.8.** New pin, regenerated world, re-verify Stages
+   1-2, revise ADR-001. Paper 1.21.8 is EOL (support ended 2025-11-14), so this
+   trades a supported server for a functional bot.
+2. **Wait for upstream.** #366 is open with no replies since July; #364 is an
+   unmerged fix whose author also renamed the package in the same PR.
+3. **Accept degraded movement on 26.1.2** and design Stage 5 agents to operate
+   locally, treating `unreachable` as normal. Viable but it constrains every
+   later stage that assumes agents can travel.
+
+Recorded rather than chosen: it costs the operator a world.

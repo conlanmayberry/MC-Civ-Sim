@@ -12,20 +12,24 @@ testable system before the next begins.
 
 ---
 
-## Current stage: **Stage 2 — complete ✅**
+## Current stage: **Stage 3 — code complete, blocked on movement ⚠️**
 
-One Mineflayer bot that connects, observes the world, and answers chat commands.
-No AI yet — that is Stage 5.
+One bot that connects, observes, obeys chat commands, and has a full
+deterministic action layer — mine, craft, place, move, eat, collect. No AI yet;
+that is Stage 5.
 
-Working and verified: connection with bounded reconnect, chat commands,
-observations (position, health, inventory, entities, blocks), structured event
-logging, and two probes (7/7 data checks, 8/8 chat cases).
+Verified: 15/15 unit tests, 7/7 data checks, 8/8 chat cases, typecheck clean.
+Every action returns a typed result rather than throwing
+([ADR-007](docs/decisions.md#adr-007--actions-are-typed-results-never-exceptions)).
 
-Movement works — 21 m in 5 seconds with zero position corrections on open
-ground. It is poor in dense forest, which is simply what walking without a
-pathfinder looks like; `mineflayer-pathfinder` is Stage 3's first task. The
-spawn area happens to be spruce canopy, which is the worst case for it, so judge
-movement on open ground too ([ADR-006](docs/decisions.md#adr-006--bot-movement-misdiagnosed-as-an-upstream-blocker-it-is-terrain)).
+⚠️ **Pathfinding does not work on Minecraft 26.1.2 in real terrain**, so Stage 3
+cannot be signed off. A controlled benchmark shows 26.1.2 wedging 3/3 on normal
+terrain while 1.21.8 wedges 0/3 — an upstream regression
+([#366](https://github.com/PrismarineJS/mineflayer-pathfinder/issues/366)), not
+a defect here. The decision costs a regenerated world, so it is the operator's:
+see [ADR-008](docs/decisions.md#adr-008--stage-3-is-code-complete-but-cannot-be-demonstrated-on-2612).
+
+Stage 4 (telemetry) does not depend on movement and could proceed meanwhile.
 
 **There is no AI and no telemetry database yet.** See
 [What is not implemented](#what-is-not-implemented).
@@ -91,8 +95,18 @@ With the server already running in another terminal:
 npm run bot
 ```
 
-Say `bot help` in Minecraft chat. Commands: `status`, `inventory` (`inv`),
-`look`, `who`, `come`, `stop`, `quit`, `help`.
+Say `bot help` in Minecraft chat:
+
+| | |
+|---|---|
+| `status` `inventory` `look` `who` | observe |
+| `goto <x> <y> <z>` `come` `follow [name]` `stop` | move |
+| `mine <block> [n]` `collect [radius]` | gather |
+| `craft <item> [n]` `place <item> [x y z]` `eat` | make and use |
+| `help` `quit` | meta |
+
+Every command prints its `ActionResult`, error code included — the operator sees
+exactly what Stage 5's model will see.
 
 `bot quit` in chat and Ctrl-C are both hard stops — neither reconnects.
 
@@ -127,9 +141,23 @@ npm run typecheck
 
 ## Running tests
 
-No unit-test suite yet — the two probes above are connected diagnostics, which
-is the right shape for a project whose failure modes are all integration-level.
-Unit tests arrive in Stage 3 with the first logic worth isolating.
+```bash
+npm test
+```
+
+Unit tests via Node's built-in runner — no test framework dependency. They cover
+the action contract and harvestability logic, the parts with real logic to
+isolate. Everything else is integration by nature and lives in the probes.
+
+The Stage 3 acceptance scenario (gather → craft → place → move → eat):
+
+```bash
+npm run scenario:bootstrap
+```
+
+It reports per-capability rather than pass/fail overall, and will say
+"NOT demonstrated" rather than claiming success when steps were skipped for
+world reasons.
 
 ## Inspecting telemetry
 
@@ -170,8 +198,8 @@ the (currently non-secret) configuration.
 | Stage | Feature | Status |
 |---|---|---|
 | 2 | Mineflayer bot — connect, observe, chat | **done** |
-| 3 | Deterministic bot actions — mine, craft, place, move | **next** (start with pathfinder) |
-| 4 | Telemetry event bus + SQLite | not started |
+| 3 | Deterministic bot actions — mine, craft, place, move | **code complete, blocked** ([ADR-008](docs/decisions.md#adr-008--stage-3-is-code-complete-but-cannot-be-demonstrated-on-2612)) |
+| 4 | Telemetry event bus + SQLite | not started — does not depend on movement |
 | 5 | Claude decision loop | not started |
 | 6 | Agent identity and goals | not started |
 | 7 | Persistent agent memory | not started |

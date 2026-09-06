@@ -6,6 +6,12 @@
  * world, and the world is untrusted input. Principle 16 of the project brief
  * draws this line, and it is cheapest to hold from the first commit.
  *
+ * Since Stage 3, the world-changing commands are thin wrappers over the action
+ * layer and print the ActionResult verbatim, error code included. That is
+ * deliberate: the operator sees exactly what Stage 5's model will see, so a
+ * command that behaves oddly in chat is a faithful preview of how the agent
+ * will experience it.
+ *
  * Outgoing chat is rate-limited because Minecraft kicks for spam, and a kick
  * triggers the reconnect path -- so an unthrottled reply loop would present as
  * a mysterious connection problem.
@@ -13,6 +19,8 @@
 
 import type { Bot } from 'mineflayer';
 
+import type { Actions, ActionResult } from './actions/index.ts';
+import { describeResult } from './actions/index.ts';
 import type { BotConfig } from '../config.ts';
 import type { Logger } from '../util/log.ts';
 import type { BotSession } from './connection.ts';
@@ -26,20 +34,14 @@ import {
 /** Minecraft rejects chat over 256 characters; leave room for the server prefix. */
 const MAX_CHAT_LENGTH = 240;
 
-/** A `bot come` that never gives up would walk into a wall until nightfall. */
-const FOLLOW_TIMEOUT_MS = 30_000;
-const FOLLOW_TICK_MS = 250;
-const FOLLOW_ARRIVAL_DISTANCE = 2.5;
-/** Below this much movement in one tick, treat the bot as blocked. */
-const STALL_DISTANCE = 0.15;
-const STALL_TICKS_BEFORE_JUMP = 2;
-/** ~3s at FOLLOW_TICK_MS: long enough to rule out a slow start. */
-const NO_MOVEMENT_CHECK_TICKS = 12;
-
 export interface CommandContext {
   bot: Bot;
   speaker: string;
   say: (message: string) => void;
+  /** Everything after the command word. */
+  args: string[];
+  actions: Actions;
+  report: (promise: Promise<ActionResult>) => void;
 }
 
 interface Command {
@@ -86,8 +88,18 @@ function createChatSender(bot: Bot, config: BotConfig, log: Logger): (message: s
 
 export interface CommandHandler {
   handle: (bot: Bot, speaker: string, message: string) => void;
-  /** Clears per-connection state. Call on every spawn. */
-  reset: (bot: Bot) => void;
+  /**
+   * Rebind to a connection. Reconnecting builds a new Bot and a new action
+   * surface (pathfinder loads per bot), so both arrive together.
+   */
+  reset: (bot: Bot, actions: Actions) => void;
+}
+
+/** Parses an integer argument, returning null rather than NaN. */
+function intArg(raw: string | undefined): number | null {
+  if (raw === undefined) return null;
+  const n = Number(raw);
+  return Number.isInteger(n) ? n : null;
 }
 
 export function createCommandHandler(
@@ -96,96 +108,21 @@ export function createCommandHandler(
   /** A getter, not the session: the session and this handler refer to each other. */
   getSession: () => BotSession,
 ): CommandHandler {
-  let followTimer: NodeJS.Timeout | null = null;
-  let followDeadline = 0;
-  let senderBot: Bot | null = null;
+  let boundActions: Actions | null = null;
   let say: (message: string) => void = () => {};
 
-  function stopMoving(bot: Bot): void {
-    if (followTimer !== null) {
-      clearInterval(followTimer);
-      followTimer = null;
-    }
-    bot.clearControlStates();
-  }
-
-  /**
-   * Deliberately crude: face the target and walk forward. Real navigation is
-   * Stage 3's job (mineflayer-pathfinder); this only needs to prove the movement
-   * control path works end to end.
-   *
-   * Two details are load-bearing and were both found by watching it fail:
-   *
-   *   lookAt(..., true) forces the rotation to apply immediately. The default
-   *   animates it over several ticks, so calling it on every tick of a control
-   *   loop restarts the animation forever and the yaw never settles -- the bot
-   *   shuffles in place because "forward" keeps changing direction.
-   *
-   *   Jump is pulsed on a detected stall, not held. Holding it makes the bot
-   *   bunny-hop continuously, which is both slower and worse at climbing.
-   */
-  function follow(bot: Bot, targetName: string): void {
-    stopMoving(bot);
-    followDeadline = Date.now() + FOLLOW_TIMEOUT_MS;
-
-    const origin = bot.entity.position.clone();
-    let lastPosition = bot.entity.position.clone();
-    let stalledTicks = 0;
-    let ticks = 0;
-
-    followTimer = setInterval(() => {
-      ticks++;
-
-      // Naive "hold forward" gets stuck in terrain this has no way to route
-      // around -- notably the spruce canopy at world spawn, where the bot
-      // stands on leaves (ADR-006). Say so quickly rather than shuffling in
-      // place until the 30s timeout. Stage 3's pathfinder is the real fix.
-      if (ticks === NO_MOVEMENT_CHECK_TICKS && bot.entity.position.distanceTo(origin) < 1) {
-        say(`I am stuck on the terrain here and cannot reach ${targetName} without pathfinding.`);
-        log.event('error', {
-          where: 'follow',
-          message: `stuck: no movement in ${String(NO_MOVEMENT_CHECK_TICKS)} ticks`,
-          standingOn: bot.blockAt(bot.entity.position.offset(0, -1, 0))?.name ?? 'unknown',
-        });
-        stopMoving(bot);
-        return;
-      }
-
-      const target = bot.players[targetName]?.entity;
-
-      if (target === undefined || target === null) {
-        say(`I lost track of ${targetName}.`);
-        stopMoving(bot);
-        return;
-      }
-
-      if (Date.now() > followDeadline) {
-        say(`Giving up on reaching ${targetName}.`);
-        stopMoving(bot);
-        return;
-      }
-
-      const distance = bot.entity.position.distanceTo(target.position);
-      if (distance <= FOLLOW_ARRIVAL_DISTANCE) {
-        say(`Reached ${targetName}.`);
-        stopMoving(bot);
-        return;
-      }
-
-      void bot.lookAt(target.position.offset(0, target.height * 0.5, 0), true);
-      bot.setControlState('forward', true);
-
-      // Blocked by a step, a trunk, or a fence post: hop once and keep going.
-      const movedSinceLastTick = bot.entity.position.distanceTo(lastPosition);
-      stalledTicks = movedSinceLastTick < STALL_DISTANCE ? stalledTicks + 1 : 0;
-      lastPosition = bot.entity.position.clone();
-
-      const shouldJump = stalledTicks >= STALL_TICKS_BEFORE_JUMP && bot.entity.onGround;
-      bot.setControlState('jump', shouldJump);
-      if (shouldJump) stalledTicks = 0;
-    }, FOLLOW_TICK_MS);
-
-    followTimer.unref();
+  /** Run an action and report its result -- failures included, with the code. */
+  function report(promise: Promise<ActionResult>): void {
+    promise
+      .then((result) => {
+        say(describeResult(result));
+      })
+      .catch((err: unknown) => {
+        // runAction never throws, so reaching here is a bug rather than an
+        // action failure. Say so plainly instead of dressing it up.
+        log.error('command-action', err);
+        say(`internal error: ${err instanceof Error ? err.message : String(err)}`);
+      });
   }
 
   const commands = new Map<string, Command>([
@@ -260,15 +197,118 @@ export function createCommandHandler(
     [
       'come',
       {
-        summary: 'walk towards you',
-        run: ({ bot, speaker, say: reply }) => {
-          const target = bot.players[speaker]?.entity;
-          if (target === undefined || target === null) {
-            reply(`I cannot see you, ${speaker}. Move closer.`);
+        summary: 'walk to you',
+        run: ({ speaker, actions, report: run }) => {
+          run(actions.followPlayer(speaker, 2));
+        },
+      },
+    ],
+    [
+      'follow',
+      {
+        summary: 'follow a player: follow [name]',
+        run: ({ speaker, args, actions, report: run }) => {
+          run(actions.followPlayer(args[0] ?? speaker, 3));
+        },
+      },
+    ],
+    [
+      'goto',
+      {
+        summary: 'walk to coordinates: goto <x> <y> <z>',
+        run: ({ args, say: reply, actions, report: run }) => {
+          const x = intArg(args[0]);
+          const y = intArg(args[1]);
+          const z = intArg(args[2]);
+          if (x === null || y === null || z === null) {
+            reply('Usage: bot goto <x> <y> <z>');
             return;
           }
-          reply(`Coming to you, ${speaker}.`);
-          follow(bot, speaker);
+          run(actions.moveTo(x, y, z, 1));
+        },
+      },
+    ],
+    [
+      'mine',
+      {
+        summary: 'mine blocks: mine <block> [count]',
+        run: ({ args, say: reply, actions, report: run }) => {
+          const block = args[0];
+          if (block === undefined) {
+            reply('Usage: bot mine <block> [count]');
+            return;
+          }
+          run(actions.mineBlock(block, intArg(args[1]) ?? 1));
+        },
+      },
+    ],
+    [
+      'craft',
+      {
+        summary: 'craft items: craft <item> [count]',
+        run: ({ args, say: reply, actions, report: run }) => {
+          const item = args[0];
+          if (item === undefined) {
+            reply('Usage: bot craft <item> [count]');
+            return;
+          }
+          run(actions.craftItem(item, intArg(args[1]) ?? 1));
+        },
+      },
+    ],
+    [
+      'place',
+      {
+        summary: 'place a block: place <item> [x y z]',
+        run: ({ bot, args, say: reply, actions, report: run }) => {
+          const item = args[0];
+          if (item === undefined) {
+            reply('Usage: bot place <item> [x y z]');
+            return;
+          }
+
+          const x = intArg(args[1]);
+          const y = intArg(args[2]);
+          const z = intArg(args[3]);
+          if (x !== null && y !== null && z !== null) {
+            run(actions.placeBlock(item, x, y, z));
+            return;
+          }
+
+          // No coordinates: place on the ground one block in front, which is
+          // what someone standing there would mean.
+          const yaw = bot.entity.yaw;
+          const forward = bot.entity.position.offset(
+            Math.round(-Math.sin(yaw)),
+            0,
+            Math.round(Math.cos(yaw)),
+          );
+          run(
+            actions.placeBlock(
+              item,
+              Math.floor(forward.x),
+              Math.floor(forward.y),
+              Math.floor(forward.z),
+            ),
+          );
+        },
+      },
+    ],
+    [
+      'eat',
+      {
+        summary: 'eat the best available food',
+        run: ({ actions, report: run }) => {
+          run(actions.eatFood());
+        },
+      },
+    ],
+    [
+      'collect',
+      {
+        summary: 'pick up nearby dropped items',
+        run: ({ args, actions, report: run }) => {
+          run(actions.collectNearbyItems(intArg(args[0]) ?? 12));
         },
       },
     ],
@@ -276,8 +316,8 @@ export function createCommandHandler(
       'stop',
       {
         summary: 'stop moving',
-        run: ({ bot, say: reply }) => {
-          stopMoving(bot);
+        run: ({ actions, say: reply }) => {
+          actions.stop();
           reply('Stopped.');
         },
       },
@@ -286,9 +326,9 @@ export function createCommandHandler(
       'quit',
       {
         summary: 'disconnect (kill switch)',
-        run: ({ bot, speaker, say: reply }) => {
+        run: ({ speaker, actions, say: reply }) => {
           reply('Disconnecting.');
-          stopMoving(bot);
+          actions.stop();
           // Let the reply reach the server before the socket closes.
           setTimeout(() => getSession().stop(`quit requested by ${speaker}`), 500).unref();
         },
@@ -299,8 +339,7 @@ export function createCommandHandler(
   commands.set('help', {
     summary: 'this list',
     run: ({ say: reply }) => {
-      const names = [...commands.keys()].join(', ');
-      reply(`Commands: ${names}`);
+      reply(`Commands: ${[...commands.keys()].join(', ')}`);
     },
   });
 
@@ -310,12 +349,8 @@ export function createCommandHandler(
   ]);
 
   return {
-    reset(bot) {
-      if (senderBot !== null && senderBot !== bot && followTimer !== null) {
-        clearInterval(followTimer);
-        followTimer = null;
-      }
-      senderBot = bot;
+    reset(bot, actions) {
+      boundActions = actions;
       say = createChatSender(bot, config, log);
     },
 
@@ -341,10 +376,15 @@ export function createCommandHandler(
         return;
       }
 
-      log.event('command_received', { from: speaker, command: name });
+      if (boundActions === null) {
+        say('I am not ready yet.');
+        return;
+      }
+
+      log.event('command_received', { from: speaker, command: name, args: words.slice(2) });
 
       try {
-        command.run({ bot, speaker, say });
+        command.run({ bot, speaker, say, args: words.slice(2), actions: boundActions, report });
       } catch (err) {
         log.error(`command:${name}`, err);
         say(`That failed: ${err instanceof Error ? err.message : String(err)}`);

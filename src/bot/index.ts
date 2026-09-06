@@ -15,6 +15,7 @@ import { createLogger } from '../util/log.ts';
 import { connect } from './connection.ts';
 import type { BotSession } from './connection.ts';
 import { createCommandHandler } from './commands.ts';
+import { createActions } from './actions/index.ts';
 
 const config = loadConfig();
 const log = createLogger(config.username);
@@ -41,7 +42,9 @@ const commands = createCommandHandler(config, log, () => {
 
 session = connect(config, log, {
   onSpawn(bot) {
-    commands.reset(bot);
+    // A reconnect produces a new Bot, and pathfinder loads per bot, so the
+    // action surface is rebuilt here rather than once at startup.
+    commands.reset(bot, createActions(bot, log));
   },
   onChat(bot, username, message) {
     commands.handle(bot, username, message);

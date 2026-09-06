@@ -388,27 +388,49 @@ for (const r of results) {
 }
 console.log('');
 
-const ok = (v: string, w: WorldKind): boolean => {
-  const r = results.find((x) => x.version === v && x.world === w);
-  return r !== undefined && r.attempted > 0 && r.reached === r.attempted;
-};
+const find = (v: string, w: WorldKind): Outcome | undefined =>
+  results.find((x) => x.version === v && x.world === w);
+const allReached = (o: Outcome | undefined): boolean =>
+  o !== undefined && o.attempted > 0 && o.reached === o.attempted;
 
-const newOk = ok('26.1.2', 'superflat') || ok('26.1.2', 'normal');
-const oldOk = ok('1.21.8', 'superflat') || ok('1.21.8', 'normal');
+const newFlat = find('26.1.2', 'superflat');
+const newNormal = find('26.1.2', 'normal');
+const oldNormal = find('1.21.8', 'normal');
 
-if (!newOk && oldOk) {
-  console.log(`  ${YELLOW}${BOLD}VERSION.${RESET} Pathfinding works on 1.21.8 and not on 26.1.2 --`);
-  console.log(`  mineflayer-pathfinder#366 confirmed independently.`);
-  console.log(`  Switching costs: new pin, regenerated world, re-verify Stages 1-2,`);
-  console.log(`  revise ADR-001. Note Paper 1.21.8 is EOL (support ended 2025-11-14).`);
-} else if (newOk && oldOk) {
-  console.log(`  ${GREEN}${BOLD}TERRAIN.${RESET} Pathfinding works on both versions here, so 26.1.2 is not`);
-  console.log(`  the problem -- civ-sim-world's spruce-forest spawn is. Keep the version;`);
-  console.log(`  relocate the bot's operating area or regenerate with a friendlier seed.`);
-} else if (!newOk && !oldOk) {
-  console.log(`  ${RED}${BOLD}NEITHER VERSION WORKS.${RESET} A downgrade will not help. Report upstream`);
-  console.log(`  with these numbers and consider driving movement without pathfinder.`);
+// Distinguish WEDGING (hangs forever, unrecoverable) from FAILING (returns, and
+// a caller can react). They look similar in a success rate and are completely
+// different to build on, so the verdict has to read the wedged column.
+const newWedges = (newNormal?.wedged ?? 0) > 0;
+const oldWedges = (oldNormal?.wedged ?? 0) > 0;
+const terrainHardForBoth =
+  (newNormal?.reached ?? 0) < (newNormal?.attempted ?? 0) &&
+  (oldNormal?.reached ?? 0) < (oldNormal?.attempted ?? 0);
+
+if (allReached(newFlat) && newWedges && !oldWedges) {
+  console.log(`  ${YELLOW}${BOLD}BOTH -- and the difference that matters is HOW they fail.${RESET}`);
+  console.log('');
+  console.log(`  Pathfinding works on 26.1.2 (${newFlat?.reached}/${newFlat?.attempted} on superflat), so the version is`);
+  console.log(`  not fundamentally broken. But on normal terrain 26.1.2 WEDGES`);
+  console.log(`  (${newNormal?.wedged}/${newNormal?.attempted}) while 1.21.8 does not (${oldNormal?.wedged}/${oldNormal?.attempted}) -- that is #366, isolated.`);
+  console.log('');
+  console.log(`  A wedge hangs forever and cannot be recovered from. A failure returns`);
+  console.log(`  and the caller can react. Terrain is hard for both versions`);
+  console.log(`  (1.21.8 managed only ${oldNormal?.reached}/${oldNormal?.attempted}), so downgrading trades a hang for a`);
+  console.log(`  failure without making the terrain easier.`);
+  console.log('');
+  console.log(`  ${GREEN}Recommended: keep 26.1.2 and detect the wedge in our own movement${RESET}`);
+  console.log(`  ${GREEN}action -- abort the goal and return a typed 'unreachable' result.${RESET}`);
+} else if (!allReached(newFlat) && allReached(find('1.21.8', 'superflat'))) {
+  console.log(`  ${YELLOW}${BOLD}VERSION.${RESET} 26.1.2 fails even on superflat while 1.21.8 does not.`);
+  console.log(`  Downgrading is justified: new pin, regenerated world, re-verify Stages 1-2,`);
+  console.log(`  revise ADR-001. Paper 1.21.8 is EOL (support ended 2025-11-14).`);
+} else if (allReached(newFlat) && !newWedges && terrainHardForBoth) {
+  console.log(`  ${GREEN}${BOLD}TERRAIN.${RESET} No wedging on either version; complex terrain is simply hard.`);
+  console.log(`  Keep the version. Improve the operating area or accept a lower success rate.`);
+} else if (!allReached(newFlat) && !allReached(find('1.21.8', 'superflat'))) {
+  console.log(`  ${RED}${BOLD}NEITHER VERSION WORKS, even on flat ground.${RESET} A downgrade will not help.`);
+  console.log(`  Report upstream and consider driving movement without pathfinder.`);
 } else {
-  console.log(`  ${YELLOW}Unexpected: 26.1.2 works and 1.21.8 does not. Re-run before concluding.${RESET}`);
+  console.log(`  ${YELLOW}Mixed result -- read the wedged column above before concluding.${RESET}`);
 }
 console.log('');

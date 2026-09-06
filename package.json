@@ -18,7 +18,9 @@
     "diagnose:movement": "node scripts/diagnose-movement.ts",
     "diagnose:movement:live": "node scripts/diagnose-movement.ts --live",
     "bot:probe-path": "node tests/probe-pathfinder.ts",
-    "diagnose:pathfinder": "node scripts/diagnose-pathfinder.ts"
+    "diagnose:pathfinder": "node scripts/diagnose-pathfinder.ts",
+    "test": "node --test \"tests/unit/*.test.ts\"",
+    "scenario:bootstrap": "node tests/scenario-bootstrap.ts"
   },
   "dependencies": {
     "mineflayer": "^4.39.0",

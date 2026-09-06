@@ -30,7 +30,15 @@ export type EventType =
   | 'command_rejected'
   | 'damage_taken'
   | 'death'
-  | 'error';
+  | 'error'
+  // Stage 3 actions. Each action emits exactly one of these, success or
+  // failure, via the runAction wrapper (ADR-007).
+  | 'movement'
+  | 'block_mined'
+  | 'block_placed'
+  | 'item_collected'
+  | 'item_crafted'
+  | 'item_consumed';
 
 export interface TelemetryEvent {
   readonly timestamp: string;
