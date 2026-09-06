@@ -1,0 +1,9 @@
+{
+  "minecraftVersion": "26.1.2",
+  "paperBuild": 74,
+  "jarName": "paper-26.1.2-74.jar",
+  "sha256": "1d70b1dab9cf4a6de615209a536f3a45a2186240253c428213ce2188ab95e5f7",
+  "javaMinimum": 25,
+  "verifiedOn": "2026-09-06",
+  "note": "Pinned for reproducibility. Run `npm run minecraft:check-latest` to see whether PaperMC has published a newer build; upgrading is a deliberate edit to this file, never automatic."
+}

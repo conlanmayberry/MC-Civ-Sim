@@ -1,0 +1,89 @@
+# MC-Civ-Sim -- Paper server configuration (Stage 1)
+#
+# This file is the TRACKED template. `npm run minecraft:setup` copies it to
+# minecraft/server/server.properties, which is git-ignored because Paper
+# rewrites it at runtime. Edit the template, not the copy.
+#
+# Keys not listed here are left to Paper's defaults and will be appended by the
+# server on first boot.
+
+#-----------------------------------------------------------------------------
+# NETWORK ISOLATION -- read docs/decisions.md ADR-002 before changing either of
+# the next two lines. They are a PAIR.
+#
+# server-ip=127.0.0.1 binds the server to loopback only: it is unreachable from
+# the LAN and from the internet. online-mode=false disables Mojang
+# authentication, which is what lets Stage 8's many Mineflayer agents connect
+# without a purchased Microsoft account each.
+#
+# online-mode=false is only acceptable BECAUSE of the loopback bind. If you ever
+# change server-ip, you must reconsider online-mode in the same edit.
+#-----------------------------------------------------------------------------
+server-ip=127.0.0.1
+server-port=25565
+online-mode=false
+prevent-proxy-connections=true
+enable-status=true
+
+#-----------------------------------------------------------------------------
+# WORLD -- a dedicated experimental world with a fixed seed, so a run can be
+# reproduced from scratch (core principle #12).
+#-----------------------------------------------------------------------------
+level-name=civ-sim-world
+level-seed=8675309420001
+level-type=minecraft\:normal
+generate-structures=true
+allow-nether=true
+hardcore=false
+
+#-----------------------------------------------------------------------------
+# GAMEPLAY -- agents must face genuine survival pressure, so survival/normal.
+#-----------------------------------------------------------------------------
+gamemode=survival
+force-gamemode=false
+difficulty=normal
+pvp=true
+spawn-monsters=true
+allow-flight=false
+
+# 0 so agents can build and mine at spawn. The default (16) would silently make
+# their first actions fail in a way that is hard to diagnose from telemetry.
+spawn-protection=0
+
+#-----------------------------------------------------------------------------
+# CAPACITY -- headroom for Stage 8+ so we do not reconfigure mid-project.
+#-----------------------------------------------------------------------------
+max-players=20
+player-idle-timeout=0
+
+# Modest distances: a 6-core laptop must stay responsive with many simultaneous
+# bots, each of which loads chunks around itself.
+view-distance=10
+simulation-distance=8
+entity-broadcast-range-percentage=100
+
+#-----------------------------------------------------------------------------
+# ADMINISTRATION -- agents get Minecraft tools, never operator powers.
+#-----------------------------------------------------------------------------
+enable-command-block=false
+op-permission-level=4
+function-permission-level=2
+broadcast-console-to-ops=true
+broadcast-rcon-to-ops=true
+
+# RCON and the query protocol stay off: no extra listening sockets, no extra
+# remote-control surface for an autonomous agent to reach.
+enable-rcon=false
+enable-query=false
+
+# Redundant with the loopback bind, and keeps bot onboarding frictionless.
+white-list=false
+enforce-whitelist=false
+
+#-----------------------------------------------------------------------------
+# MISC
+#-----------------------------------------------------------------------------
+motd=MC-Civ-Sim :: autonomous agent laboratory (local only)
+max-world-size=29999984
+max-tick-time=60000
+sync-chunk-writes=true

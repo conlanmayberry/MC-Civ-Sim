@@ -1,0 +1,15 @@
+{
+  "name": "mc-civ-sim",
+  "version": "0.1.0",
+  "private": true,
+  "description": "An artificial-society laboratory: autonomous AI agents in a persistent Minecraft world, with structured telemetry for scientific analysis.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "minecraft:setup": "node scripts/setup-paper.mjs",
+    "minecraft:check-latest": "node scripts/setup-paper.mjs --check-latest",
+    "minecraft": "node scripts/start-server.mjs"
+  }
+}
