@@ -32,7 +32,7 @@ import { connect } from '../bot/connection.ts';
 import type { BotSession } from '../bot/connection.ts';
 import { createTelemetry } from '../telemetry/index.ts';
 import { createBudget, DEFAULT_LIMITS } from '../ai/budget.ts';
-import { MODEL, describeModel, formatUsd } from '../ai/pricing.ts';
+import { MODEL, PRICES, describeModel, formatUsd } from '../ai/pricing.ts';
 import { createOpenAiProvider } from '../ai/openai.ts';
 import { createStubProvider } from '../ai/provider.ts';
 import type { AiProvider } from '../ai/provider.ts';
@@ -89,6 +89,25 @@ try {
   process.exit(1);
 }
 
+/**
+ * Which model this agent thinks with: its own, or the project default.
+ *
+ * Per-agent so one agent can be trialled on a stronger model while the others
+ * stay cheap -- the only way to separate "the model is not good enough" from
+ * "the prompt is not good enough" without changing everything at once. Priced
+ * from the same table the budget cap uses, so an unknown model fails here
+ * rather than silently costing an unknown amount.
+ */
+const agentModel = identity.model ?? MODEL;
+if (!dryRun && PRICES[agentModel] === undefined) {
+  console.error(`
+${RED}  Unknown model "${agentModel}" for agent ${identity.id}.${RESET}`);
+  console.error(`  Priced models: ${Object.keys(PRICES).join(', ')}`);
+  console.error(`  ${DIM}Add it to src/ai/pricing.ts, or fix "model" in config/agents/${identity.id}.json${RESET}
+`);
+  process.exit(1);
+}
+
 // --- provider selection, and the money conversation --------------------------
 
 let provider: AiProvider;
@@ -112,7 +131,7 @@ if (dryRun) {
     console.error(`      npm run agent -- --dry-run\n`);
     process.exit(1);
   }
-  provider = createOpenAiProvider({ apiKey });
+  provider = createOpenAiProvider({ apiKey, model: agentModel });
 }
 
 const limits = { ...DEFAULT_LIMITS, maxUsd: budgetUsd };
@@ -128,19 +147,22 @@ const hearing = createHearing(identity.username, {
 
 const telemetry = createTelemetry(identity.id, {
   minecraftVersion: config.version,
-  note: dryRun ? 'npm run agent --dry-run' : `npm run agent (${MODEL})`,
+  note: dryRun ? 'npm run agent --dry-run' : `npm run agent (${agentModel})`,
 });
 const log = telemetry.logger;
 
 console.log('');
 console.log(`${BOLD}  MC-Civ-Sim agent${RESET}  ${identity.username} (${identity.id})`);
 console.log(`  ${DIM}${identity.traits.join(', ')}${RESET}`);
+if (identity.role !== null) {
+  console.log(`  ${BOLD}role:${RESET} ${identity.role}`);
+}
 if (dryRun) {
   console.log(`  ${BOLD}DRY RUN${RESET} -- scripted decisions, no API calls, ${BOLD}$0.00${RESET}`);
 } else {
   // Never let cost be a surprise. Printed before the first call, every time.
   console.log(`  ${YELLOW}LIVE -- this spends real money.${RESET}`);
-  console.log(`  ${DIM}${describeModel(MODEL)}${RESET}`);
+  console.log(`  ${DIM}${describeModel(agentModel)}${RESET}`);
   console.log(
     `  budget ${BOLD}${formatUsd(limits.maxUsd)}${RESET}, ` +
       `thinking every ${intervalMs / 1000}s, max ${limits.maxRequestsPerMinute} calls/min`,

@@ -306,6 +306,61 @@ describe('identity', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  test('an assigned role is stated as a job, and only that one line is', () => {
+    // Roles are a deliberate exception to the brief's "dispositions, not
+    // orders" rule, and the exception has to stay contained: the traits above
+    // it must not turn into instructions just because a role is present.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'civsim-id-'));
+    const file = path.join(dir, 'roled.json');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        id: 'roled',
+        username: 'Roled',
+        role: 'miner -- supply the group with stone and ore',
+        traits: ['cautious'],
+      }),
+    );
+
+    const fragment = toPromptFragment(loadIdentity(file));
+
+    assert.match(fragment, /your job is: miner/);
+    assert.match(fragment, /tend to be cautious/, 'traits stay dispositions');
+    // The failure mode this guards: a specialist who will not eat because
+    // feeding itself is not its job.
+    assert.match(fragment, /keep yourself alive/);
+    assert.doesNotMatch(fragment, /nobody has told you what your purpose is/);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('an agent with no role keeps the original emergent framing', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'civsim-id-'));
+    const file = path.join(dir, 'free.json');
+    fs.writeFileSync(file, JSON.stringify({ id: 'free', username: 'Free', traits: ['bold'] }));
+
+    const fragment = toPromptFragment(loadIdentity(file));
+
+    assert.match(fragment, /dispositions, not orders/);
+    assert.doesNotMatch(fragment, /your job is/);
+    assert.equal(loadIdentity(file).role, null);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('a malformed role or model is rejected at load, not at the API', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'civsim-id-'));
+    const roleFile = path.join(dir, 'badrole.json');
+    fs.writeFileSync(roleFile, JSON.stringify({ id: 'x', username: 'Xxx', role: 42 }));
+    assert.throws(() => loadIdentity(roleFile), /role/);
+
+    const modelFile = path.join(dir, 'badmodel.json');
+    fs.writeFileSync(modelFile, JSON.stringify({ id: 'y', username: 'Yyy', model: [] }));
+    assert.throws(() => loadIdentity(modelFile), /model/);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   test('an invalid Minecraft username is rejected at load', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'civsim-id-'));
     const file = path.join(dir, 'bad.json');

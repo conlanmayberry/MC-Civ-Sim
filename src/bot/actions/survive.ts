@@ -366,6 +366,25 @@ export function createSurviveActions(ctx: ActionContext) {
           const placed = bot.blockAt(target);
           const changed = placed !== null && placed.name !== before && placed.name !== 'air';
           if (!changed) {
+            // Something is standing in that space that has no collision box, so
+            // it passed the "is it empty" check above, but the server will not
+            // let a block replace it either. Saplings, flowers, torches and
+            // crops all behave this way -- grass and ferns, which ARE
+            // replaceable, do not. minecraft-data exposes no flag separating
+            // them, so the world is asked instead of guessed at.
+            //
+            // This mattered: one such placement was retried 110 times across
+            // seven runs against a spruce_sapling, because "the block is still
+            // spruce_sapling" reads as a transient glitch rather than as
+            // "there is a sapling there and you must break it first".
+            if (before !== 'air' && placed !== null && placed.name === before) {
+              throw new ActionFailure(
+                'blocked',
+                `a ${before} is in that space -- it has no collision so it looks empty, ` +
+                  `but nothing can be placed over it. Mine the ${before} first, then place.`,
+              );
+            }
+
             throw new ActionFailure(
               'failed',
               placeError === null

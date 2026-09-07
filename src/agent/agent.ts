@@ -31,6 +31,7 @@ import type { AgentIdentity } from './identity.ts';
 import type { Inbox } from './inbox.ts';
 import type { Hearing } from './hearing.ts';
 import type { Places } from './places.ts';
+import { createSetbacks } from './setbacks.ts';
 import { createWaker } from './waker.ts';
 
 export interface AgentOptions {
@@ -204,6 +205,9 @@ export function createAgent(options: AgentOptions): Agent {
   let cycle = 0;
   let stopping: string | null = null;
   const waker = createWaker();
+  // What has already been tried and refused, so a failure survives longer than
+  // the six-turn history window that let one placement be retried 110 times.
+  const setbacks = createSetbacks();
 
   function nudge(reason: string, urgent = false): void {
     waker.nudge(reason, urgent);
@@ -247,7 +251,12 @@ export function createAgent(options: AgentOptions): Agent {
     // takeNew, not recent: each message is presented once as fresh. The
     // window in `recent` still gives continuity through history.
     const heard = hearing.takeNew();
-    const observation = buildObservation(bot, cycle, heard, goal, places.all());
+    const observation = buildObservation(bot, cycle, {
+      heard,
+      goal,
+      places: places.all(),
+      setbacks: setbacks.all(cycle),
+    });
 
     // Timed because thinking is dead air: the agent stands still for it, and
     // without a number there is no way to tell a slow model from a slow loop.
@@ -343,6 +352,19 @@ export function createAgent(options: AgentOptions): Agent {
       );
       results.push(describeForModel(call.name, result));
 
+      // Remembered past the history window, and cleared the moment the same
+      // attempt works -- a setback is a fact about a moment, not a law.
+      if (result.ok) {
+        setbacks.succeeded(call.name, call.args);
+      } else {
+        setbacks.record(
+          call.name,
+          call.args,
+          result.error?.message ?? result.error?.code ?? 'failed',
+          cycle,
+        );
+      }
+
       if (isEffective(result)) effective = true;
 
       // A failure is information, not an error: the model sees it next turn and
@@ -384,13 +406,22 @@ export function createAgent(options: AgentOptions): Agent {
       const message = hearing.hear(from, text, distance);
       if (message === null) return;
 
-      // Being addressed by name deserves an answer now, not in half a minute --
-      // and it is urgent enough to stop what the agent is part-way through,
-      // which chat that merely happened nearby is not.
-      nudge(
-        message.directed ? `${from} addressed you` : `chat from ${from}`,
-        message.directed,
-      );
+      // ONLY being addressed by name wakes the agent.
+      //
+      // Overhearing used to trigger a decision too, which was right with one
+      // agent and a player and became a feedback storm with four: every
+      // message woke the other three, each of whom replied, waking the
+      // others. Measured across a one-hour four-agent session, 82% of all
+      // 1,487 decisions were chat-triggered and 40% were merely overheard --
+      // most of the run's thinking, and most of its cost, was agents
+      // answering each other rather than doing anything.
+      //
+      // Nothing is lost by not waking: the message is already recorded above
+      // and appears in the next observation either way. This changes when it
+      // is read, not whether.
+      if (!message.directed) return;
+
+      nudge(`${from} addressed you`, true);
     },
 
     async run(bot, actions) {
@@ -417,6 +448,9 @@ export function createAgent(options: AgentOptions): Agent {
         provider: provider.id,
         intervalMs: options.intervalMs,
         traits: identity.traits,
+        // Recorded because it changes what the run is evidence FOR: with a
+        // role assigned, division of labour was given rather than observed.
+        role: identity.role,
       });
 
       let stopReason = 'unknown';

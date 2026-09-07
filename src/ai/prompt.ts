@@ -32,6 +32,8 @@ import type { HeardMessage } from '../agent/hearing.ts';
 import { describeHearing } from '../agent/hearing.ts';
 import type { Place } from '../agent/places.ts';
 import { describePlaces } from '../agent/places.ts';
+import type { Setback } from '../agent/setbacks.ts';
+import { describeSetbacks } from '../agent/setbacks.ts';
 
 /** How many past cycles the model is reminded of. */
 export const HISTORY_WINDOW = 6;
@@ -88,6 +90,25 @@ export function buildSystemPrompt(identity: AgentIdentity): string {
     'move to flatter ground before placing a structure, rather than placing',
     'pieces one at a time and finding out from the failures.',
     '',
+    'When you build, decide the whole shape BEFORE placing anything, and say it',
+    'in your reason: where the corners are, how tall the walls are, which side',
+    'the door is on. A structure is finished when it has all four walls at the',
+    'same height, a roof, a doorway you can walk through, and light inside. Work',
+    'to that standard:',
+    '  - Pick the footprint first. A 5x5 or 6x6 square on level ground is enough',
+    '    for one person and is far easier to finish than something ambitious.',
+    '  - Use ONE material for the walls. A shelter patched from dirt, cobble and',
+    '    planks in whatever order they came to hand looks like debris, and you',
+    '    have to live in it.',
+    '  - Leave the doorway as you build, rather than sealing yourself in and',
+    '    mining back out. Two blocks tall, on one side, decided in advance.',
+    '  - Finish the structure you started before beginning another one. Three',
+    '    half-built shelters are worth less than one finished shelter.',
+    '  - Build on the surface unless you mean to build underground. Digging a',
+    '    hole is easier than raising walls and that is exactly why it happens by',
+    '    accident -- if you find yourself underground without having chosen to',
+    '    be, come back up.',
+    '',
     'Other people and agents can talk to you, and you will see what they said.',
     'If someone speaks to you, answer them with send_chat. Being spoken to and',
     'saying nothing is rude, and it wastes the only way you have of learning',
@@ -112,14 +133,22 @@ export function buildSystemPrompt(identity: AgentIdentity): string {
   ].join('\n');
 }
 
+/** Everything the observation needs beyond the bot itself and the turn number. */
+export interface ObservationContext {
+  heard?: HeardMessage[];
+  goal?: string | null;
+  places?: readonly Place[];
+  /** Attempts already known not to work -- see agent/setbacks.ts. */
+  setbacks?: readonly Setback[];
+}
+
 /** A compact, readable snapshot. JSON would cost more tokens and read worse. */
 export function buildObservation(
   bot: Bot,
   cycle: number,
-  heard: HeardMessage[] = [],
-  goal: string | null = null,
-  places: readonly Place[] = [],
+  context: ObservationContext = {},
 ): string {
+  const { heard = [], goal = null, places = [], setbacks = [] } = context;
   const self = observeSelf(bot);
   const inventory = observeInventory(bot);
   const entities = observeEntities(bot, ENTITY_RADIUS, MAX_ENTITIES);
@@ -198,6 +227,11 @@ export function buildObservation(
   // What was said to it. Without this an agent is woken by chat but cannot
   // hear a word of it, which is how it was until this was added.
   lines.push(...describeHearing(heard));
+
+  // What it has already tried and failed. The history window is six turns, so
+  // without this a failure from eight turns ago is simply gone -- which is how
+  // one placement came to be attempted 110 times across seven runs.
+  lines.push(...describeSetbacks(setbacks));
 
   // Surface the pressures worth reacting to, without prescribing a reaction.
   const pressures: string[] = [];

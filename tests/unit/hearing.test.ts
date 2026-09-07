@@ -138,7 +138,7 @@ describe('observation integration', () => {
     const heard = createHearing('Alice');
     heard.hear('Cheeksmack56', 'Alice, follow me', 4);
 
-    const observation = buildObservation(bot, 1, heard.takeNew());
+    const observation = buildObservation(bot, 1, { heard: heard.takeNew() });
     assert.match(observation, /Cheeksmack56/);
     assert.match(observation, /follow me/);
   });

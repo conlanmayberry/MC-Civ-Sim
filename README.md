@@ -102,6 +102,36 @@ version must match the server exactly.
 They change to the project directory themselves and install dependencies on
 first run, so they work from anywhere.
 
+## Roles, and which model an agent thinks with
+
+Each `config/agents/*.json` may set two things beyond personality:
+
+```jsonc
+{
+  "role": "builder -- build and finish the group's structures ...",
+  "model": "gpt-5.6-terra"   // omit for the project default (Luna)
+}
+```
+
+**`role` is a directive, and it is the one part of an identity that is.**
+Everything else -- traits, interests, values -- is phrased as disposition on
+purpose, because the brief is about behaviour that emerges. Assigning roles
+changes what a run is evidence for: it is no longer evidence about whether
+division of labour emerges, but about what a group does once it already has
+one. Both are worth running. The role is recorded on the `agent_started`
+event so analysis can tell the two kinds of run apart, and an agent with no
+role keeps the original emergent framing exactly.
+
+The four shipped agents are assigned: Alice farms, Bob builds, Carla mines,
+Dmitri explores -- each matched to the personality it already had.
+
+**`model` is per-agent** so a stronger model can be trialled on one agent
+against the others on the cheap one, which is the only way to tell "the model
+is not good enough" from "the prompt is not good enough" without changing
+everything at once. It is priced from the same table the budget cap uses, so
+an unknown model fails at startup rather than silently costing an unknown
+amount.
+
 ## Running several agents at once
 
 Four identities ship in `config/agents/`: Alice, Bob, Carla and Dmitri, each
