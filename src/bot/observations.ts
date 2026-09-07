@@ -87,6 +87,12 @@ export interface BlockTally {
   nearestDistance: number;
 }
 
+export interface PlaceableSpot {
+  position: Position;
+  /** The solid block this would be placed against. */
+  against: Position;
+}
+
 export interface BlocksObservation {
   radius: number;
   verticalRadius: number;
@@ -253,4 +259,61 @@ export function observeBlocks(
     .sort((a, b) => b.count - a.count);
 
   return { radius, verticalRadius, sampled, blocks };
+}
+
+
+/**
+ * Positions nearby where a block could actually be placed.
+ *
+ * Added after watching an agent fail `place_block` five times in a row: it
+ * could see WHAT was around it but never WHERE there was room, so it guessed
+ * coordinates and got `blocked` every time. That was an observation gap, not a
+ * reasoning failure -- the agent was asked to build without being able to see
+ * empty space.
+ *
+ * Mirrors exactly what `placeBlock` requires: an empty position, within reach,
+ * with something solid adjacent to place against. Anything it returns will be
+ * accepted by the action.
+ */
+export function observePlaceableSpots(bot: Bot, limit = 4): PlaceableSpot[] {
+  const origin = bot.entity.position;
+  const found: PlaceableSpot[] = [];
+
+  // Nearby and reachable first: place_block requires the target within ~5
+  // blocks, so distant candidates would only be rejected.
+  const offsets: Array<[number, number, number]> = [];
+  for (const dy of [0, -1, 1]) {
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        if (dx === 0 && dz === 0 && dy === 0) continue;
+        offsets.push([dx, dy, dz]);
+      }
+    }
+  }
+  offsets.sort((a, b) => Math.hypot(a[0], a[2]) - Math.hypot(b[0], b[2]));
+
+  const SUPPORTS: Array<[number, number, number]> = [
+    [0, -1, 0],
+    [1, 0, 0],
+    [-1, 0, 0],
+    [0, 0, 1],
+    [0, 0, -1],
+  ];
+
+  for (const [dx, dy, dz] of offsets) {
+    if (found.length >= limit) break;
+
+    const target = origin.offset(dx, dy, dz).floored();
+    const here = bot.blockAt(target);
+    if (here === null || here.boundingBox !== 'empty') continue;
+
+    for (const [ax, ay, az] of SUPPORTS) {
+      const anchor = bot.blockAt(target.offset(ax, ay, az));
+      if (anchor === null || anchor.boundingBox !== 'block') continue;
+      found.push({ position: toPosition(target), against: toPosition(anchor.position) });
+      break;
+    }
+  }
+
+  return found;
 }

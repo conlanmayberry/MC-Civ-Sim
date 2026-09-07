@@ -22,6 +22,7 @@ import {
   observeBlocks,
   observeEntities,
   observeInventory,
+  observePlaceableSpots,
   observeSelf,
 } from '../bot/observations.ts';
 import type { AgentIdentity } from '../agent/identity.ts';
@@ -94,6 +95,18 @@ export function buildObservation(bot: Bot, cycle: number): string {
   if (entities.entities.length > 0) {
     lines.push(
       `Nearby: ${entities.entities.map((e) => `${e.name} at ${e.distance}m`).join(', ')}.`,
+    );
+  }
+
+  // Without this the agent has to guess coordinates for place_block and gets
+  // `blocked` every time -- it can see what is around it but not where there is
+  // room. These are spots the action will actually accept.
+  const spots = observePlaceableSpots(bot);
+  if (spots.length > 0) {
+    lines.push(
+      `You could place a block at: ${spots
+        .map((s) => `${s.position.x},${s.position.y},${s.position.z}`)
+        .join(' or ')}.`,
     );
   }
 

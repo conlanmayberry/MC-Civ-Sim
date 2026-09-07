@@ -18,6 +18,7 @@ import type { Bot } from 'mineflayer';
 import type { Actions } from '../bot/actions/index.ts';
 import type { Logger } from '../util/log.ts';
 import type { Budget } from '../ai/budget.ts';
+import { backoffMs, classifyProviderError } from '../ai/errors.ts';
 import { formatUsd } from '../ai/pricing.ts';
 import type { AiProvider } from '../ai/provider.ts';
 import { describeForModel } from '../ai/provider.ts';
@@ -52,6 +53,14 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 /** Hunger and health thresholds that justify thinking early. */
 const LOW_FOOD = 6;
 const LOW_HEALTH = 10;
+/**
+ * Give up after this many failures in a row.
+ *
+ * A backstop for errors the classifier does not recognise: unknown failures are
+ * treated as transient so a one-off does not end a run, and this is what stops
+ * "transient" becoming "forever".
+ */
+const MAX_CONSECUTIVE_FAILURES = 5;
 
 export function createAgent(options: AgentOptions): Agent {
   const { identity, provider, budget, inbox, log } = options;
@@ -188,6 +197,7 @@ export function createAgent(options: AgentOptions): Agent {
       });
 
       let stopReason = 'unknown';
+      let consecutiveFailures = 0;
 
       for (;;) {
         if (stopping !== null) {
@@ -209,11 +219,37 @@ export function createAgent(options: AgentOptions): Agent {
 
         try {
           await runOneCycle(bot, actions);
+          consecutiveFailures = 0;
         } catch (err) {
+          consecutiveFailures++;
+          const { kind, reason } = classifyProviderError(err);
+
           log.error('agent-cycle', err);
-          // One bad cycle should not end an experiment, but a persistently
-          // failing provider would burn the budget on retries -- so back off.
-          await sleep(5_000);
+          log.event('observation', {
+            note: 'cycle failed',
+            kind,
+            reason,
+            consecutiveFailures,
+          });
+
+          // A permanent condition -- no credits, a rejected key, a model that
+          // does not exist -- will not fix itself. Retrying it every few
+          // seconds forever is a runaway loop, so stop and say why.
+          if (kind === 'permanent') {
+            stopReason = `provider error (${reason})`;
+            console.error(`
+  ${reason} -- stopping. This will not resolve by retrying.`);
+            break;
+          }
+
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            stopReason = `${consecutiveFailures} consecutive failures (${reason})`;
+            console.error(`
+  ${consecutiveFailures} cycles failed in a row -- stopping.`);
+            break;
+          }
+
+          await sleep(backoffMs(consecutiveFailures));
         }
 
         if (stopping !== null) {
