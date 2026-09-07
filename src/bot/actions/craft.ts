@@ -11,6 +11,14 @@
  * ("Event updateSlot:0 did not fire"). This module takes a count of ITEMS --
  * which is what a caller, and later a model, actually means -- and converts.
  *
+ * ONE REPETITION AT A TIME. `bot.craft` does not check it can afford the
+ * repetitions it was asked for. Measured by tests/probe-crafting.ts on 1.21.8:
+ * a single repetition is reliable and takes ~170ms, while two repetitions with
+ * materials for one performs the first, throws on the second, and reports the
+ * whole call as a failure -- discarding what it just made. So each repetition
+ * is done and verified separately, which turns "produced nothing" into "made 4
+ * of the 8 you asked for".
+ *
  * The 2x2 / 3x3 distinction. `bot.recipesFor(id, null, count, table)` returns
  * only recipes craftable RIGHT NOW with what is in the inventory, and the last
  * argument decides whether 3x3 recipes count. So we ask twice: first without a
@@ -85,15 +93,16 @@ export function createCraftActions(ctx: ActionContext) {
 
           const before = inventoryCount(bot, itemName);
 
-          // `count` here is a number of ITEMS, and recipesFor filters by items
-          // the inventory can actually supply -- so a recipe coming back is
-          // already proof the materials exist.
+          // `count` here is a number of ITEMS. Ask for ONE, not for `count`:
+          // getting a recipe back for a large count is not the guarantee it
+          // looks like, and the loop below re-checks before every repetition
+          // anyway.
           // Inventory grid first: cheapest, and most early recipes fit.
-          let recipe = bot.recipesFor(item.id, null, count, null)[0];
+          let recipe = bot.recipesFor(item.id, null, 1, null)[0];
           let table: Block | null = null;
 
           if (recipe === undefined) {
-            const tableRecipe = bot.recipesFor(item.id, null, count, true)[0];
+            const tableRecipe = bot.recipesFor(item.id, null, 1, true)[0];
 
             if (tableRecipe === undefined) {
               // Nothing craftable either way -- distinguish why.
@@ -167,71 +176,104 @@ export function createCraftActions(ctx: ActionContext) {
           // asking for 4 sticks is ONE repetition, not four.
           const perCraft = Math.max(1, recipe.result?.count ?? 1);
           const times = Math.ceil(count / perCraft);
+
+          // ONE REPETITION AT A TIME, re-checked before each.
+          //
+          // `bot.craft(recipe, n)` does not verify it can afford n. Measured on
+          // 1.21.8: one repetition is reliable and takes ~170ms, while two
+          // repetitions with materials for one performs the first, throws
+          // "missing ingredient" on the second, and reports the whole call as a
+          // failure -- discarding the four sticks it just made. In a live run
+          // that surfaced as "crafting stick produced nothing", twice, while
+          // the planks quietly went down by two each time.
+          //
+          // Doing them one at a time makes a shortfall a partial success rather
+          // than a total failure, and bounds what a single bad repetition can
+          // strand in the crafting grid.
+          let crafted = 0;
+          let done = 0;
           let craftError: string | null = null;
 
-          // A window left open from an earlier failure holds items hostage in
-          // its grid; starting a new craft on top of that is how materials
-          // disappear.
-          if (bot.currentWindow !== null) {
+          for (let rep = 0; rep < times; rep++) {
+            if (signal.aborted) break;
+
+            // Re-resolve every time: the inventory has changed since the last
+            // repetition, and this is the check that "can I still afford it?"
+            // actually depends on.
+            const next =
+              table === null
+                ? bot.recipesFor(item.id, null, 1, null)[0]
+                : bot.recipesFor(item.id, null, 1, true)[0];
+
+            if (next === undefined) {
+              // Out of materials. Not an error if something was made -- the
+              // agent asked for more than it could afford, and the honest
+              // answer is how many it got.
+              break;
+            }
+
+            // A window left open from an earlier failure holds items hostage in
+            // its grid; starting a new craft on top of that is how materials
+            // disappear.
+            if (bot.currentWindow !== null) {
+              try {
+                await bot.closeWindow(bot.currentWindow);
+                await sleep(200);
+              } catch {
+                /* nothing better to try */
+              }
+            }
+
             try {
-              await bot.closeWindow(bot.currentWindow);
-              await sleep(200);
-            } catch {
-              /* nothing better to try */
-            }
-          }
-
-          try {
-            await bot.craft(recipe, times, table ?? undefined);
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            // Translate mineflayer's internals into something an agent can act
-            // on. "Event windowOpen did not fire" tells it nothing; "the table
-            // did not open, place one next to you" tells it what to try.
-            if (/windowOpen/i.test(message)) {
-              throw new ActionFailure(
-                'blocked',
-                'the crafting table did not open -- you may be too far from it. ' +
-                  'Move right next to it, or place a new table beside you.',
-              );
+              await bot.craft(next, 1, table ?? undefined);
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              // Translate mineflayer's internals into something an agent can
+              // act on. "Event windowOpen did not fire" tells it nothing; "the
+              // table did not open, place one next to you" tells it what to
+              // try. Thrown immediately: no amount of repeating fixes reach.
+              if (/windowOpen/i.test(message)) {
+                throw new ActionFailure(
+                  'blocked',
+                  'the crafting table did not open -- you may be too far from it. ' +
+                    'Move right next to it, or place a new table beside you.',
+                );
+              }
+              craftError = message;
             }
 
-            // Do NOT trust this exception. mineflayer throws when it does not
-            // observe the slot update it expected, but the craft frequently
-            // happened anyway -- and worse, ingredients can be sitting in the
-            // grid where they no longer show in the inventory. Close the window
-            // to get them back, then let the inventory decide the outcome.
-            craftError = message;
-          }
-
-          if (bot.currentWindow !== null) {
-            try {
-              // Closing returns anything left in the grid. Without this, a
-              // failed craft silently destroys the materials it staged --
-              // observed as 10 planks becoming 0 while producing one item.
-              await bot.closeWindow(bot.currentWindow);
-              await sleep(250);
-            } catch {
-              /* nothing better to try */
+            if (bot.currentWindow !== null) {
+              try {
+                // Closing returns anything left in the grid. Without this, a
+                // failed craft silently destroys the materials it staged --
+                // observed as 10 planks becoming 0 while producing one item.
+                await bot.closeWindow(bot.currentWindow);
+                await sleep(250);
+              } catch {
+                /* nothing better to try */
+              }
             }
+
+            // bot.craft resolves when the transaction is acknowledged, which
+            // can be before the inventory update arrives. Counting immediately
+            // reports a real success as "produced nothing", so wait for the
+            // inventory to actually reflect it before judging.
+            let after = crafted;
+            for (let attempt = 0; attempt < INVENTORY_SETTLE_ATTEMPTS; attempt++) {
+              await sleep(INVENTORY_SETTLE_MS);
+              after = inventoryCount(bot, itemName) - before;
+              if (after > crafted) break;
+            }
+
+            // This repetition produced nothing. Repeating it would fail the
+            // same way and strand more materials, so stop and report.
+            if (after <= crafted) break;
+
+            crafted = after;
+            done++;
           }
 
-          // bot.craft resolves when the crafting transaction is acknowledged,
-          // which can be before the resulting inventory update arrives -- fast
-          // crafts finish in tens of milliseconds. Counting immediately reports
-          // a real success as "produced nothing", so wait for the inventory to
-          // actually reflect it before judging.
-          let gained = 0;
-          for (let attempt = 0; attempt < INVENTORY_SETTLE_ATTEMPTS; attempt++) {
-            await sleep(INVENTORY_SETTLE_MS);
-            gained = inventoryCount(bot, itemName) - before;
-            if (gained > 0) break;
-          }
-
-          if (gained <= 0) {
-            // Genuinely nothing: the window closed early or the materials went
-            // elsewhere. Report it rather than claiming a success the inventory
-            // contradicts.
+          if (crafted <= 0) {
             throw new ActionFailure(
               'failed',
               craftError === null
@@ -243,9 +285,19 @@ export function createCraftActions(ctx: ActionContext) {
           return {
             item: itemName,
             requested: count,
-            crafts: times,
+            gained: crafted,
+            crafts: done,
             perCraft,
-            gained,
+            // Said plainly, because "gained 4" against "requested 8" is
+            // otherwise something the agent has to notice for itself.
+            ...(crafted < count
+              ? {
+                  short: count - crafted,
+                  note: `made ${crafted} of the ${count} you asked for -- ${
+                    craftError === null ? 'ran out of materials' : craftError
+                  }`,
+                }
+              : {}),
             usedCraftingTable: table !== null,
             ...(table === null ? {} : { tableAt: toPosition(table.position) }),
           };
