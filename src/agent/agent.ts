@@ -26,12 +26,14 @@ import { buildObservation, buildSystemPrompt, trimHistory } from '../ai/prompt.t
 import { TOOL_SCHEMAS, invokeTool } from '../ai/tools.ts';
 import type { AgentIdentity } from './identity.ts';
 import type { Inbox } from './inbox.ts';
+import type { Hearing } from './hearing.ts';
 
 export interface AgentOptions {
   identity: AgentIdentity;
   provider: AiProvider;
   budget: Budget;
   inbox: Inbox;
+  hearing: Hearing;
   log: Logger;
   /** Normal thinking interval. */
   intervalMs: number;
@@ -44,6 +46,11 @@ export interface Agent {
   run: (bot: Bot, actions: Actions) => Promise<void>;
   /** Ask for an early decision, e.g. after taking damage. */
   nudge: (reason: string) => void;
+  /**
+   * Deliver something said nearby. Records it and, if it names this agent,
+   * wakes it to reply now rather than at the next interval.
+   */
+  hear: (from: string, text: string, distance: number | null) => void;
   stop: (reason: string) => void;
   cycles: () => number;
 }
@@ -63,7 +70,7 @@ const LOW_HEALTH = 10;
 const MAX_CONSECUTIVE_FAILURES = 5;
 
 export function createAgent(options: AgentOptions): Agent {
-  const { identity, provider, budget, inbox, log } = options;
+  const { identity, provider, budget, inbox, hearing, log } = options;
 
   const system = buildSystemPrompt(identity);
   let history: string[] = [];
@@ -110,7 +117,10 @@ export function createAgent(options: AgentOptions): Agent {
       });
     }
 
-    const observation = buildObservation(bot, cycle);
+    // takeNew, not recent: each message is presented once as fresh. The
+    // window in `recent` still gives continuity through history.
+    const heard = hearing.takeNew();
+    const observation = buildObservation(bot, cycle, heard);
 
     const outcome = await provider.decide({
       system,
@@ -176,6 +186,14 @@ export function createAgent(options: AgentOptions): Agent {
 
     nudge,
 
+    hear(from, text, distance) {
+      const message = hearing.hear(from, text, distance);
+      if (message === null) return;
+
+      // Being addressed by name deserves an answer now, not in half a minute.
+      nudge(message.directed ? `${from} addressed you` : `chat from ${from}`);
+    },
+
     async run(bot, actions) {
       // React to things worth reacting to, rather than only to the clock.
       bot.on('health', () => {
@@ -183,9 +201,9 @@ export function createAgent(options: AgentOptions): Agent {
         else if (bot.health <= LOW_HEALTH) nudge('hurt');
       });
       bot.on('death', () => nudge('died'));
-      bot.on('chat', (username) => {
-        if (username !== bot.username) nudge(`chat from ${username}`);
-      });
+      // Chat arrives via hear(), called from the single onChat handler in
+      // main.ts. Registering another bot.on('chat') here would double-log every
+      // message, since connection.ts already records chat_received.
 
       log.event('agent_started', {
         agent: identity.id,

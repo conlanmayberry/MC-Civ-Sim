@@ -140,7 +140,10 @@ export function observeInventory(bot: Bot): InventoryObservation {
     }),
   );
 
-  const held = bot.heldItem;
+  // Typed `Item | null`, but genuinely undefined at the edges of the bot
+  // lifecycle -- the same trap as bot.health at spawn. A `=== null` check
+  // alone lets undefined through and throws on the next property access.
+  const held = bot.heldItem ?? null;
 
   // inventory.slots includes armour and crafting slots; the main storage window
   // is what "empty slots" should mean to a consumer, so count from items().

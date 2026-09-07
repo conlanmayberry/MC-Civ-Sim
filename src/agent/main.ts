@@ -33,6 +33,9 @@ import type { AiProvider } from '../ai/provider.ts';
 import { createAgent } from './agent.ts';
 import { loadIdentityById } from './identity.ts';
 import { createInbox } from './inbox.ts';
+import { createHearing } from './hearing.ts';
+import { DEFAULT_CONTROL_PORT, startControlServer } from './control.ts';
+import type { ControlServer } from './control.ts';
 
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
@@ -107,6 +110,13 @@ if (dryRun) {
 const limits = { ...DEFAULT_LIMITS, maxUsd: budgetUsd };
 const budget = createBudget(limits);
 const inbox = createInbox();
+// Radius defaults to Infinity, matching vanilla Minecraft's global chat.
+// AGENT_HEARING_RADIUS restricts it -- see hearing.ts on why Stage 9 needs that.
+const hearing = createHearing(identity.username, {
+  radius: Number(env['AGENT_HEARING_RADIUS'] ?? '') > 0
+    ? Number(env['AGENT_HEARING_RADIUS'])
+    : Number.POSITIVE_INFINITY,
+});
 
 const telemetry = createTelemetry(identity.id, {
   minecraftVersion: config.version,
@@ -141,11 +151,13 @@ if (fs.existsSync(KILL_FILE)) {
 // --- wire it up --------------------------------------------------------------
 
 let session: BotSession | null = null;
+let control: ControlServer | null = null;
 let stopping = false;
 
 function shutdown(reason: string): void {
   if (stopping) return;
   stopping = true;
+  control?.close();
   agent.stop(reason);
   session?.stop(reason);
 }
@@ -155,6 +167,7 @@ const agent = createAgent({
   provider,
   budget,
   inbox,
+  hearing,
   log,
   intervalMs,
   onStopped: (reason) => {
@@ -183,6 +196,60 @@ session = connect(
       telemetry.attach(bot);
       const actions = createActions(bot, log);
       void agent.run(bot, actions);
+
+      if (control === null) {
+        const controlPort = Number(env['AGENT_CONTROL_PORT'] ?? '') > 0
+          ? Number(env['AGENT_CONTROL_PORT'])
+          : DEFAULT_CONTROL_PORT;
+
+        void startControlServer(
+          {
+            // Heard as speech: the agent may reply, or not.
+            say(from, text) {
+              agent.hear(from, text, null);
+              // Echo into Minecraft so anyone in-game sees what was said from
+              // the terminal -- otherwise half a conversation is invisible.
+              try {
+                bot.chat(`[${from}] ${text}`);
+              } catch {
+                /* not connected; the agent still heard it */
+              }
+            },
+            // An operator directive, recorded as an intervention.
+            inject(from, text) {
+              const queued = inbox.inject(text, from);
+              if (queued !== null) agent.nudge(`instruction from ${from}`);
+              return queued !== null;
+            },
+            state: () => ({
+              agentId: identity.id,
+              username: identity.username,
+              traits: identity.traits,
+              cycles: agent.cycles(),
+              spentUsd: budget.spentUsd(),
+              budgetUsd: limits.maxUsd,
+              model: provider.model,
+              running: budget.stopped() === null,
+              pendingInjections: inbox.pending(),
+              recentlyHeard: hearing.recent(),
+            }),
+            stop: (reason) => shutdown(reason),
+          },
+          log,
+          controlPort,
+        )
+          .then((server) => {
+            control = server;
+            console.log(`  [2mtalk to it from a terminal: npm run talk  (port ${server.port})[0m`);
+          })
+          .catch((err: unknown) => {
+            // Not fatal: the agent runs fine without a control server, and
+            // Minecraft chat still works.
+            console.error(
+              `  [33mcontrol server unavailable: ${err instanceof Error ? err.message : String(err)}[0m`,
+            );
+          });
+      }
     },
 
     onChat(bot, username, message) {
@@ -208,7 +275,18 @@ session = connect(
       }
       if (text === 'agent status') {
         bot.chat(`${identity.username}: ${agent.cycles()} decisions, ${budget.summary()}`);
+        return;
       }
+
+      // Anything else is ordinary conversation. The agent hears it, sees who
+      // said it and how far away they were, and can answer with send_chat.
+      const speaker = bot.players[username]?.entity;
+      const distance =
+        speaker === undefined || speaker === null
+          ? null
+          : Math.round(bot.entity.position.distanceTo(speaker.position) * 10) / 10;
+
+      agent.hear(username, text, distance);
     },
 
     onStopping() {

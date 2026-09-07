@@ -27,6 +27,8 @@ import {
 } from '../bot/observations.ts';
 import type { AgentIdentity } from '../agent/identity.ts';
 import { toPromptFragment } from '../agent/identity.ts';
+import type { HeardMessage } from '../agent/hearing.ts';
+import { describeHearing } from '../agent/hearing.ts';
 
 /** How many past cycles the model is reminded of. */
 export const HISTORY_WINDOW = 6;
@@ -58,12 +60,18 @@ export function buildSystemPrompt(identity: AgentIdentity): string {
     'insufficient_items means you lack materials. Repeating a failed action',
     'unchanged will fail the same way -- do something different.',
     '',
+    'Other people and agents can talk to you, and you will see what they said.',
+    'If someone speaks to you, answer them with send_chat. Being spoken to and',
+    'saying nothing is rude, and it wastes the only way you have of learning',
+    'things you cannot see for yourself. You can also speak first if you want',
+    'something from someone.',
+    '',
     'Nobody is going to tell you what to do next. Decide.',
   ].join('\n');
 }
 
 /** A compact, readable snapshot. JSON would cost more tokens and read worse. */
-export function buildObservation(bot: Bot, cycle: number): string {
+export function buildObservation(bot: Bot, cycle: number, heard: HeardMessage[] = []): string {
   const self = observeSelf(bot);
   const inventory = observeInventory(bot);
   const entities = observeEntities(bot, ENTITY_RADIUS, MAX_ENTITIES);
@@ -109,6 +117,10 @@ export function buildObservation(bot: Bot, cycle: number): string {
         .join(' or ')}.`,
     );
   }
+
+  // What was said to it. Without this an agent is woken by chat but cannot
+  // hear a word of it, which is how it was until this was added.
+  lines.push(...describeHearing(heard));
 
   // Surface the pressures worth reacting to, without prescribing a reaction.
   const pressures: string[] = [];

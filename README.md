@@ -92,6 +92,7 @@ version must match the server exactly.
 | `start-bot.bat` | starts the scripted bot (no AI) |
 | `dry-run-agent.bat` | runs the agent loop with no API calls — **free** |
 | `start-agent.bat` | runs the agent for real — **spends money** |
+| `talk-to-agent.bat` | chat with a running agent from a terminal |
 
 They change to the project directory themselves and install dependencies on
 first run, so they work from anywhere.
@@ -154,11 +155,43 @@ needs more than one:
 | Ctrl-C | you are at the terminal |
 | create a file named `STOP` | neither of the above; also what the dashboard will use |
 
-**Steering it** — say `agent tell <something>` in chat to inject a thought. It
-lands on the next decision, and is recorded to telemetry as an operator
-intervention so analysis can see exactly where a human interfered.
+## Talking to an agent
 
-`agent status` reports decisions made and spend so far.
+Agents hear what is said near them, know when a message names them, and can
+reply with `send_chat`.
+
+**From Minecraft** — just talk. Say `Alice, come here` and she is woken
+immediately rather than waiting for the next interval.
+
+**From a terminal** — no need to launch the game:
+
+```bash
+npm run talk
+```
+
+or `talk-to-agent.bat`. Inside that prompt:
+
+| | |
+|---|---|
+| *anything* | the agent hears it as speech and may reply |
+| `/tell <x>` | an operator **instruction**, not conversation |
+| `/state` | decisions made, spend so far |
+| `/stop` | halt the agent |
+| `/quit` | leave the prompt; the agent keeps running |
+
+One message without the prompt:
+
+```bash
+npm run talk -- "Alice, what are you doing?"
+```
+
+**Say and tell are deliberately different.** *Say* is conversation — the agent
+may reply or ignore it. *Tell* is a directive, weighted as one and recorded in
+telemetry as an intervention. A run where the operator issued orders is not the
+same experiment as one where they chatted, so the log has to distinguish them.
+
+In-game, `agent tell <x>` still works as the directive form, and `agent status`
+reports progress.
 
 ## Starting the scripted bot
 
