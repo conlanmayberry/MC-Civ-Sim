@@ -8,26 +8,30 @@
  * neighbour of the target position and deriving the face vector back towards
  * the empty space. Getting this wrong is the difference between "placed" and a
  * silent no-op, which is why the result is verified against the world
- * afterwards rather than trusted.
+ * afterwards rather than trusted. It also walks to the target if needed, like
+ * mine_block and craft_item already do -- a model planning an eight-block wall
+ * should not have to interleave move_to between every piece.
  */
 
 import type { Bot } from 'mineflayer';
 import { Vec3 } from 'vec3';
 
+import { navigateTo } from './movement.ts';
 import type { ActionContext } from './run.ts';
 import { ActionFailure } from './run.ts';
 import type { ActionResult } from './types.ts';
 import { toPosition } from './types.ts';
 
 /**
- * Just above mineflayer's own 5s placement ack window.
+ * Above mineflayer's own 5s placement ack window, plus enough slack to walk a
+ * few blocks first now that place_block does that itself (see below).
  *
  * It was 20s, and 85 of 131 placements burned the whole budget before failing.
  * A placement either lands within a few seconds or it is not going to, and a
  * fast failure is worth far more to the agent than a slow one: it gets the
  * feedback while the situation is still the one it decided about.
  */
-export const DEFAULT_PLACE_TIMEOUT_MS = 9_000;
+export const DEFAULT_PLACE_TIMEOUT_MS = 12_000;
 export const DEFAULT_EAT_TIMEOUT_MS = 15_000;
 
 /** The six neighbours of a block, with the face vector pointing back at it. */
@@ -42,11 +46,34 @@ const FACES: Array<{ offset: Vec3; face: Vec3 }> = [
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * mineflayer's `bot.consume()` waits at most 2,500ms (hard-coded in its own
+ * source, independent of any timeout given here) for a server packet
+ * confirming the eating animation finished, then throws "Promise timed out."
+ * if it does not arrive in time.
+ *
+ * Measured live across four agents on one server: real completions cluster
+ * around 1.9s and this throws on roughly HALF of all genuine eat attempts --
+ * confirmed by checking inventory snapshots across the failures, which showed
+ * the food item's count and the bot's hunger both unchanged, so this is not
+ * the same class of bug as craft/place (work done but reported as failed).
+ * The eat itself is genuinely still in flight when mineflayer gives up on it.
+ * Retrying immediately works almost every time, which is what this does.
+ */
+const EAT_ATTEMPTS = 3;
+
 export function createSurviveActions(ctx: ActionContext) {
   const { bot, runner } = ctx;
 
   function findItem(name: string) {
     return bot.inventory.items().find((i) => i.name === name) ?? null;
+  }
+
+  function countItem(name: string): number {
+    return bot.inventory
+      .items()
+      .filter((i) => i.name === name)
+      .reduce((sum, i) => sum + i.count, 0);
   }
 
   return {
@@ -83,7 +110,7 @@ export function createSurviveActions(ctx: ActionContext) {
     ): Promise<ActionResult> {
       return runner.run(
         { action: 'place_block', eventType: 'block_placed', timeoutMs },
-        async () => {
+        async (signal) => {
           if (![x, y, z].every(Number.isFinite)) {
             throw new ActionFailure('invalid_argument', 'coordinates must be finite numbers');
           }
@@ -130,11 +157,32 @@ export function createSurviveActions(ctx: ActionContext) {
             );
           }
 
-          if (bot.entity.position.distanceTo(target) > 5) {
-            throw new ActionFailure(
-              'unreachable',
-              `target is ${bot.entity.position.distanceTo(target).toFixed(1)}m away; move closer first`,
+          // Walk over rather than refuse. mine_block and craft_item have always
+          // done this; place_block did not, and it showed: a batch planning a
+          // multi-block wall would place the first few reachable pieces, then
+          // fail the rest with "9.4m away -- move closer first" because the
+          // model had not interleaved a move_to. That is real reasoning the
+          // model should not have to do for every single block of a structure.
+          if (bot.entity.position.distanceTo(target) > 4) {
+            const nav = await navigateTo(
+              bot,
+              target.x + 0.5,
+              target.y,
+              target.z + 0.5,
+              3,
+              Math.max(5_000, timeoutMs - 4_000),
+              signal,
             );
+
+            // Arriving is what matters, not pathfinder's verdict -- a wedge
+            // just short of the spot can still leave it in reach.
+            if (bot.entity.position.distanceTo(target) > 5) {
+              throw new ActionFailure(
+                'unreachable',
+                `cannot get within reach of ${target.x},${target.y},${target.z} ` +
+                  `(${nav.outcome}, ${bot.entity.position.distanceTo(target).toFixed(1)}m away)`,
+              );
+            }
           }
 
           await bot.equip(item, 'hand');
@@ -228,9 +276,36 @@ export function createSurviveActions(ctx: ActionContext) {
           }
 
           const foodBefore = bot.food;
+          const countBefore = countItem(chosen.item.name);
           await bot.equip(chosen.item, 'hand');
-          await bot.consume();
-          await sleep(300);
+
+          // See EAT_ATTEMPTS: consume() throws on a hard-coded 2.5s internal
+          // timeout that real eating regularly exceeds, so the exception is
+          // not trusted and the world is checked instead -- either signal
+          // (hunger restored, or the item actually consumed) counts as done.
+          let consumeError: string | null = null;
+          for (let attempt = 0; attempt < EAT_ATTEMPTS; attempt++) {
+            try {
+              await bot.consume();
+            } catch (err) {
+              consumeError = err instanceof Error ? err.message : String(err);
+            }
+
+            await sleep(300);
+            if (bot.food > foodBefore || countItem(chosen.item.name) < countBefore) {
+              consumeError = null;
+              break;
+            }
+          }
+
+          if (bot.food <= foodBefore && countItem(chosen.item.name) >= countBefore) {
+            throw new ActionFailure(
+              'failed',
+              consumeError === null
+                ? `eating ${chosen.item.name} had no effect`
+                : `eating ${chosen.item.name} did not complete (${consumeError})`,
+            );
+          }
 
           return {
             item: chosen.item.name,

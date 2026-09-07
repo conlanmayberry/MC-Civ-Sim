@@ -332,6 +332,73 @@ export function observePlaceableSpots(bot: Bot, limit = 4): PlaceableSpot[] {
 }
 
 
+export interface GroundProfile {
+  radius: number;
+  /** Columns where a surface was actually found -- some may be unloaded. */
+  sampled: number;
+  /** Lowest and highest surface height in the area, or null if nothing loaded. */
+  minY: number | null;
+  maxY: number | null;
+  /** Surface height directly under the bot, for reference. */
+  hereY: number | null;
+}
+
+/**
+ * How much the ground varies across a small area around the bot.
+ *
+ * Added after place_block ran at a 37% success rate across four agents
+ * building at once, dominated by "grass_block already occupies that
+ * position" and "target is 9m away". `observeBlocks` says what is nearby but
+ * not whether the ground UNDER a planned footprint is level, so a rectangular
+ * wall plotted assuming flat ground collides with terrain on the columns that
+ * happen to sit higher, and fails `unreachable` on the columns that happen to
+ * be farther away once the agent is standing in the resulting gap. Digging
+ * into a hillside sidesteps both problems -- every neighbour is already solid
+ * -- which is very likely why builds skew underground: it is the shape the
+ * failure rate rewards, not a choice about what looks good.
+ *
+ * Deliberately a summary, not a grid: the full per-column picture exists for
+ * the dashboard in observeMapTiles, but handing an agent an 9x9 table of
+ * numbers to plan from is worse than one sentence it can act on -- "this spot
+ * is not flat" is something a model can react to; 81 numbers are not.
+ */
+export function observeGroundProfile(bot: Bot, radius = 4): GroundProfile {
+  const origin = bot.entity.position;
+  const originX = Math.floor(origin.x);
+  const originY = Math.floor(origin.y);
+  const originZ = Math.floor(origin.z);
+
+  let minY: number | null = null;
+  let maxY: number | null = null;
+  let hereY: number | null = null;
+  let sampled = 0;
+
+  for (let dx = -radius; dx <= radius; dx++) {
+    for (let dz = -radius; dz <= radius; dz++) {
+      // Scan down from just above head height: this is about the ground right
+      // here, not spelunking, so the depth is small and fixed on purpose.
+      let surfaceY: number | null = null;
+      for (let dy = 2; dy >= -8; dy--) {
+        const block = bot.blockAt(new Vec3(originX + dx, originY + dy, originZ + dz));
+        if (block === null) continue;
+        if (block.name === 'air' || block.name === 'cave_air' || block.name === 'void_air') continue;
+        surfaceY = originY + dy;
+        break;
+      }
+      // Unloaded, or nothing solid within range -- imperfect information, not
+      // an error, and left out of the summary rather than guessed at.
+      if (surfaceY === null) continue;
+
+      sampled++;
+      if (minY === null || surfaceY < minY) minY = surfaceY;
+      if (maxY === null || surfaceY > maxY) maxY = surfaceY;
+      if (dx === 0 && dz === 0) hereY = surfaceY;
+    }
+  }
+
+  return { radius, sampled, minY, maxY, hereY };
+}
+
 export interface MapTile {
   /** Offset from the map centre, in blocks. */
   dx: number;

@@ -21,6 +21,7 @@ import type { Bot } from 'mineflayer';
 import {
   observeBlocks,
   observeEntities,
+  observeGroundProfile,
   observeInventory,
   observePlaceableSpots,
   observeSelf,
@@ -39,6 +40,10 @@ const BLOCK_RADIUS = 12;
 const ENTITY_RADIUS = 24;
 const MAX_ENTITIES = 8;
 const MAX_BLOCK_KINDS = 10;
+/** A modest footprint -- about what one small structure needs, not a survey. */
+const GROUND_RADIUS = 4;
+/** Ground within this many blocks of level is "flat" rather than "sloped". */
+const FLAT_TOLERANCE = 1;
 
 /**
  * The standing instructions. Deliberately short: long rulebooks produce
@@ -75,6 +80,13 @@ export function buildSystemPrompt(identity: AgentIdentity): string {
     'unreachable means no route; no_tool means you need a better tool first;',
     'insufficient_items means you lack materials. Repeating a failed action',
     'unchanged will fail the same way -- do something different.',
+    '',
+    'You are told whether the ground near you is level before you build.',
+    'Placing a wall against sloped ground fails at every point the wall meets',
+    'earth instead of air, which reads as random `blocked` results unless you',
+    'already know the ground was not flat. On sloped ground, level a pad or',
+    'move to flatter ground before placing a structure, rather than placing',
+    'pieces one at a time and finding out from the failures.',
     '',
     'Other people and agents can talk to you, and you will see what they said.',
     'If someone speaks to you, answer them with send_chat. Being spoken to and',
@@ -143,6 +155,24 @@ export function buildObservation(
       `You could place a block at: ${spots
         .map((s) => `${s.position.x},${s.position.y},${s.position.z}`)
         .join(' or ')}.`,
+    );
+  }
+
+  // Without this an agent plots a rectangular building assuming flat ground,
+  // collides with terrain on the columns that sit higher, and cannot tell
+  // why -- which is very likely why builds end up dug into a hillside instead
+  // of standing on the surface: every neighbour there is already solid, so
+  // nothing collides. One line names the problem instead of leaving it to be
+  // discovered as a string of unexplained `blocked` results.
+  const ground = observeGroundProfile(bot, GROUND_RADIUS);
+  if (ground.minY !== null && ground.maxY !== null) {
+    const slope = ground.maxY - ground.minY;
+    lines.push(
+      slope <= FLAT_TOLERANCE
+        ? `The ground within ${ground.radius} blocks is roughly level (around y${ground.minY}) -- a reasonable building spot.`
+        : `The ground within ${ground.radius} blocks is NOT level -- it varies from y${ground.minY} to y${ground.maxY} ` +
+            `(${slope} blocks of slope). A rectangular structure here will have some walls meet solid ground ` +
+            `partway up and others hang in the air; level a pad first, terrace it, or find flatter ground.`,
     );
   }
 
