@@ -1,11 +1,13 @@
 /**
- * The model's tool surface: exactly the nine actions from
- * src/bot/actions/index.ts, and nothing else.
+ * The model's tool surface: exactly the actions in src/bot/actions/index.ts,
+ * and nothing else.
  *
  * This file IS the security boundary for principle 16 of the project brief.
  * There is no tool that runs code, reads a file, spawns a process or reaches
  * the host. Whatever the model decides, the worst it can do is play Minecraft
- * badly in a world we can delete.
+ * badly in a world we can delete. give_item included: it is a normal item
+ * drop made real by physical proximity, not a wire transfer -- it can no more
+ * reach outside the world than place_block can.
  *
  * That closed surface is also why player chat reaching an agent's observations
  * is safe to allow. Someone can try to talk an agent into something -- and
@@ -128,6 +130,22 @@ export const TOOL_SCHEMAS: readonly ToolSchema[] = [
     parameters: object({
       item: str('Item name.'),
       destination: nullableStr("One of hand, head, torso, legs, feet, off-hand. Default hand."),
+    }),
+  },
+  {
+    name: 'give_item',
+    description:
+      'Hand an item to a named player by walking to them and dropping it. ' +
+      'You must be standing close together for this to actually reach them -- ' +
+      'it is a normal drop, not a throw, so promising to give something and ' +
+      'then staying where you are does not work. It drops the item near them, ' +
+      'not into their inventory directly -- it can scatter a little on landing, ' +
+      'so they may still need collect_items on their end. Fails with not_found ' +
+      'if you cannot see them right now.',
+    parameters: object({
+      item: str('Item name, e.g. bread, spruce_planks.'),
+      count: int('How many to give.'),
+      username: str('Exact name of the player or agent to give it to.'),
     }),
   },
   {
@@ -278,6 +296,13 @@ export async function invokeTool(
             : 'hand';
         return await actions.equipItem(reqStr(args['item'], 'item'), destination);
       }
+
+      case 'give_item':
+        return await actions.giveItem(
+          reqStr(args['item'], 'item'),
+          reqInt(args['count'], 'count'),
+          reqStr(args['username'], 'username'),
+        );
 
       case 'set_goal': {
         const goal = reqStr(args['goal'], 'goal').slice(0, 200);

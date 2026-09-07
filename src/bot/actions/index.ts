@@ -33,6 +33,7 @@ export interface Actions {
   placeBlock: ReturnType<typeof createSurviveActions>['placeBlock'];
   eatFood: ReturnType<typeof createSurviveActions>['eatFood'];
   equipItem: ReturnType<typeof createSurviveActions>['equipItem'];
+  giveItem: ReturnType<typeof createSurviveActions>['giveItem'];
   /** True while an action holds the bot. */
   busy: () => boolean;
 }
@@ -64,6 +65,7 @@ export function createActions(bot: Bot, log: Logger): Actions {
     placeBlock: survive.placeBlock,
     eatFood: survive.eatFood,
     equipItem: survive.equipItem,
+    giveItem: survive.giveItem,
     busy: runner.busy,
   };
 }

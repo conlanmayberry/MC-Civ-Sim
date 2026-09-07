@@ -48,7 +48,8 @@ export type EventType =
   | 'agent_started'
   | 'agent_stopped'
   | 'goal_set'
-  | 'place_remembered';
+  | 'place_remembered'
+  | 'item_given';
 
 export interface TelemetryEvent {
   readonly timestamp: string;

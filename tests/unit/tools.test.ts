@@ -70,6 +70,7 @@ describe('tool schemas', () => {
       'eat_food',
       'equip_item',
       'follow_player',
+      'give_item',
       'mine_block',
       'move_to',
       'place_block',
@@ -126,6 +127,10 @@ function stubActions(record: string[]): Actions {
     eatFood: async () => {
       record.push('eat()');
       return ok('eat_food');
+    },
+    giveItem: async (i, c, u) => {
+      record.push(`give(${i},${String(c)},${u})`);
+      return ok('give_item');
     },
     equipItem: async (i, d) => {
       record.push(`equip(${i},${String(d)})`);
@@ -227,6 +232,16 @@ describe('tool dispatch', () => {
     });
     assert.equal(result.ok, false);
     assert.match(result.error?.message ?? '', /all three/);
+  });
+
+  test('give_item dispatches item, count and recipient in order', async () => {
+    const calls: string[] = [];
+    await invokeTool(stubActions(calls), () => {}, 'give_item', {
+      item: 'bread',
+      count: 2,
+      username: 'Carla',
+    });
+    assert.deepEqual(calls, ['give(bread,2,Carla)']);
   });
 
   test('send_chat routes to chat rather than to an action', async () => {

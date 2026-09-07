@@ -11,6 +11,16 @@
  * afterwards rather than trusted. It also walks to the target if needed, like
  * mine_block and craft_item already do -- a model planning an eight-block wall
  * should not have to interleave move_to between every piece.
+ *
+ * `giveItem` exists because nothing else in the tool surface lets one agent
+ * actually help another. Watched live: three agents spent several minutes
+ * promising food to a fourth who was starving -- "I have bread", "take a
+ * berry", "I'll bring it to the base" -- and every single handoff failed
+ * because there was no way to carry out the promise, only to talk about it.
+ * The hungry agent died mid-conversation. `bot.toss` drops the stack at the
+ * giver's own feet rather than throwing it toward anyone, so this is only
+ * real if the two are standing close together first, which is why it walks
+ * over the same way placeBlock and craftItem do.
  */
 
 import type { Bot } from 'mineflayer';
@@ -33,6 +43,18 @@ import { toPosition } from './types.ts';
  */
 export const DEFAULT_PLACE_TIMEOUT_MS = 12_000;
 export const DEFAULT_EAT_TIMEOUT_MS = 15_000;
+export const DEFAULT_GIVE_TIMEOUT_MS = 12_000;
+
+/**
+ * How close the giver must be before tossing.
+ *
+ * `bot.toss` is a window transaction, not a directional throw -- the item
+ * appears at the GIVER'S feet, not carried toward the recipient. Vanilla item
+ * pickup only reaches roughly a block, so this has to be tight enough that the
+ * drop is actually within the recipient's reach, not just "nearby" by the
+ * standard of place_block or mine_block.
+ */
+const GIVE_RANGE = 2;
 
 /** The six neighbours of a block, with the face vector pointing back at it. */
 const FACES: Array<{ offset: Vec3; face: Vec3 }> = [
@@ -91,6 +113,129 @@ export function createSurviveActions(ctx: ActionContext) {
           }
           await bot.equip(item, destination);
           return { item: itemName, destination };
+        },
+      );
+    },
+
+    /**
+     * Hand an item to a named player by walking to them and dropping it.
+     *
+     * There is no protocol-level "give" -- this is a normal drop, made real
+     * only by standing close enough first. `not_found` covers both "no such
+     * player" and "was visible a moment ago but is not now", since mineflayer
+     * cannot tell those apart any better than the agent could by eye.
+     *
+     * Verified live with two throwaway bots: even navigated to within a
+     * couple of blocks, a dropped stack picks up a small random velocity and
+     * can roll a further block or two on uneven ground before it settles --
+     * confirmed by watching one land nearly 3m from a stationary recipient
+     * standing on a slope. Vanilla pickup is automatic once someone's hitbox
+     * actually reaches it, so this is honest about giving it a NAME
+     * ("dropped near X") rather than a GUARANTEE ("X now has it"), and the
+     * result says so.
+     */
+    async giveItem(
+      itemName: string,
+      count: number,
+      toUsername: string,
+      timeoutMs = DEFAULT_GIVE_TIMEOUT_MS,
+    ): Promise<ActionResult> {
+      return runner.run(
+        { action: 'give_item', eventType: 'item_given', timeoutMs },
+        async (signal) => {
+          if (!Number.isInteger(count) || count < 1) {
+            throw new ActionFailure('invalid_argument', 'count must be a positive integer');
+          }
+
+          const have = countItem(itemName);
+          if (have === 0) {
+            throw new ActionFailure('insufficient_items', `no ${itemName} in inventory`);
+          }
+          const amount = Math.min(count, have);
+
+          const target = bot.players[toUsername]?.entity;
+          if (target === undefined || target === null) {
+            throw new ActionFailure(
+              'not_found',
+              `cannot see ${toUsername} -- they may be out of render distance, in another dimension, or offline`,
+            );
+          }
+
+          if (bot.entity.position.distanceTo(target.position) > GIVE_RANGE) {
+            await navigateTo(
+              bot,
+              target.position.x,
+              target.position.y,
+              target.position.z,
+              1,
+              Math.max(5_000, timeoutMs - 4_000),
+              signal,
+            );
+
+            // Re-read: they may have walked off while this was approaching,
+            // which the giver cannot have known when it decided to come here.
+            const current = bot.players[toUsername]?.entity;
+            if (current === undefined || current === null) {
+              throw new ActionFailure(
+                'not_found',
+                `${toUsername} is no longer visible -- they may have moved away`,
+              );
+            }
+            const distance = bot.entity.position.distanceTo(current.position);
+            if (distance > GIVE_RANGE) {
+              throw new ActionFailure(
+                'unreachable',
+                `could not get close enough to ${toUsername} to hand it over ` +
+                  `(${distance.toFixed(1)}m away -- stand within ${GIVE_RANGE}m of each other)`,
+              );
+            }
+          }
+
+          const item = findItem(itemName);
+          if (item === null) {
+            // Only reachable if something else consumed it while walking over,
+            // which the action mutex should prevent -- but trust the inventory
+            // over the assumption.
+            throw new ActionFailure('insufficient_items', `no ${itemName} in inventory`);
+          }
+
+          try {
+            await bot.lookAt(target.position.offset(0, 1, 0), true);
+          } catch {
+            /* not fatal; the drop still lands at the giver's feet either way */
+          }
+
+          const before = countItem(itemName);
+          try {
+            await bot.toss(item.type, null, amount);
+          } catch (err) {
+            throw new ActionFailure(
+              'failed',
+              `could not drop ${itemName}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+
+          await sleep(250);
+
+          // Verified by change, same as every other action here: this drops
+          // the stack rather than confirming it was PICKED UP, since that
+          // depends on what the recipient does next and is not this action's
+          // to promise.
+          const given = before - countItem(itemName);
+          if (given <= 0) {
+            throw new ActionFailure('failed', `dropping ${itemName} had no effect`);
+          }
+
+          return {
+            item: itemName,
+            given,
+            // Dropped, not delivered -- see the block comment above this
+            // function. Told plainly rather than implied, since "given: 3"
+            // alone reads as "they have it now", which this cannot promise.
+            note: `dropped near ${toUsername}; it may have scattered a little on landing -- they may need collect_items to actually pick it up`,
+            to: toUsername,
+            ...(given < amount ? { short: amount - given } : {}),
+          };
         },
       );
     },

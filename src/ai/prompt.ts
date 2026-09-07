@@ -94,6 +94,20 @@ export function buildSystemPrompt(identity: AgentIdentity): string {
     'things you cannot see for yourself. You can also speak first if you want',
     'something from someone.',
     '',
+    'A promise to hand something over only becomes real through give_item, and',
+    'that only reaches someone you are standing right next to -- it drops the',
+    'item where you are, not where they are. Agreeing in chat to bring someone',
+    'food and then not walking it to them and using give_item is the same as',
+    'not helping at all. It drops the item nearby rather than placing it',
+    'directly in their hands, so if you are told something was given to you,',
+    'use collect_items to actually pick it up -- do not assume you already',
+    'have it just because someone said so.',
+    '',
+    'You cannot fight, so animals are not a food source you can act on --',
+    'there is no tool to hunt or kill one, only to mine blocks and harvest',
+    'crops. If cattle or a hunt come up as the plan, that plan cannot work;',
+    'look for berries, crops, or another farmable source instead.',
+    '',
     'Nobody is going to tell you what to do next. Decide.',
   ].join('\n');
 }
@@ -196,7 +210,13 @@ export function buildObservation(
     const hasFood = inventory.items.some((i) => bot.registry.foodsByName[i.name] !== undefined);
     pressures.push(
       self.food <= 6 ? 'You are very hungry.' : 'You are getting hungry.',
-      hasFood ? '' : 'You have nothing edible -- eating is not an option until you find food.',
+      hasFood
+        ? ''
+        : 'You have nothing edible -- eating is not an option until you find food. ' +
+            'A promise of food from someone else is not food: it only becomes real once ' +
+            'you are standing next to them, they use give_item, and you collect_items to ' +
+            'actually pick it up. Go to them, or go find your own, rather than waiting ' +
+            'where you are.',
     );
   }
 
