@@ -23,6 +23,7 @@
 
 import type { Bot } from 'mineflayer';
 import type { Entity } from 'prismarine-entity';
+import { Vec3 } from 'vec3';
 
 export interface Position {
   x: number;
@@ -319,4 +320,69 @@ export function observePlaceableSpots(bot: Bot, limit = 4): PlaceableSpot[] {
   }
 
   return found;
+}
+
+
+export interface MapTile {
+  /** Offset from the map centre, in blocks. */
+  dx: number;
+  dz: number;
+  /** Surface block name, or null if the column is unloaded or all air. */
+  name: string | null;
+  /** Height of that surface block. */
+  y: number | null;
+}
+
+export interface MapView {
+  centre: Position;
+  radius: number;
+  tiles: MapTile[];
+}
+
+/**
+ * A top-down surface view around the bot, for the dashboard map.
+ *
+ * Returns the highest non-air block in each column, which is what a player
+ * looking down would see. Deliberately separate from `observeBlocks`: that
+ * answers "what resources are near me" for an agent, this answers "what does
+ * this place look like" for a human. Merging them would make both worse.
+ *
+ * Cost is one column scan per tile, so the radius matters -- 20 gives a 41x41
+ * grid. The dashboard polls this far less often than live state for that
+ * reason.
+ *
+ * Still only what the bot knows: unloaded columns come back as null rather than
+ * being filled in from the server's world. The map shows what the agent could
+ * see, not the truth (ADR-005).
+ */
+export function observeMapTiles(bot: Bot, radius = 20, depth = 24): MapView {
+  const origin = bot.entity.position;
+  const originX = Math.floor(origin.x);
+  const originY = Math.floor(origin.y);
+  const originZ = Math.floor(origin.z);
+
+  const tiles: MapTile[] = [];
+
+  for (let dx = -radius; dx <= radius; dx++) {
+    for (let dz = -radius; dz <= radius; dz++) {
+      let found: MapTile = { dx, dz, name: null, y: null };
+
+      // Scan down from above the bot: the first solid thing is the surface.
+      for (let dy = depth; dy >= -depth; dy--) {
+        const block = bot.blockAt(new Vec3(originX + dx, originY + dy, originZ + dz));
+        if (block === null) continue;
+        if (block.name === 'air' || block.name === 'cave_air' || block.name === 'void_air') continue;
+        found = { dx, dz, name: block.name, y: originY + dy };
+        break;
+      }
+
+      tiles.push(found);
+    }
+  }
+
+  return {
+    centre: toPosition(origin),
+    radius,
+    tiles,
+  };
 }

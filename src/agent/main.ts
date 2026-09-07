@@ -22,6 +22,12 @@ import path from 'node:path';
 
 import { ROOT, loadConfig, loadEnvFile } from '../config.ts';
 import { createActions } from '../bot/actions/index.ts';
+import {
+  observeEntities,
+  observeInventory,
+  observeMapTiles,
+  observeSelf,
+} from '../bot/observations.ts';
 import { connect } from '../bot/connection.ts';
 import type { BotSession } from '../bot/connection.ts';
 import { createTelemetry } from '../telemetry/index.ts';
@@ -72,6 +78,7 @@ const intervalMs = numberSetting('interval', 'AI_INTERVAL_SECONDS', DEFAULT_INTE
 const budgetUsd = numberSetting('budget', 'AI_BUDGET_USD', DEFAULT_LIMITS.maxUsd);
 
 const config = loadConfig();
+const startedAt = new Date().toISOString();
 
 let identity;
 try {
@@ -207,6 +214,10 @@ session = connect(
             // Heard as speech: the agent may reply, or not.
             say(from, text) {
               agent.hear(from, text, null);
+              // Logged here rather than in hear(): Minecraft chat is already
+              // recorded by connection.ts, so logging inside hear() would
+              // double-count it. This path is the one nothing else sees.
+              log.event('chat_received', { from, message: text, source: 'control' });
               // Echo into Minecraft so anyone in-game sees what was said from
               // the terminal -- otherwise half a conversation is invisible.
               try {
@@ -221,18 +232,50 @@ session = connect(
               if (queued !== null) agent.nudge(`instruction from ${from}`);
               return queued !== null;
             },
-            state: () => ({
-              agentId: identity.id,
-              username: identity.username,
-              traits: identity.traits,
-              cycles: agent.cycles(),
-              spentUsd: budget.spentUsd(),
-              budgetUsd: limits.maxUsd,
-              model: provider.model,
-              running: budget.stopped() === null,
-              pendingInjections: inbox.pending(),
-              recentlyHeard: hearing.recent(),
-            }),
+            state: () => {
+              // Guarded: the dashboard polls continuously, including while the
+              // bot is reconnecting and has no entity. A throw here would show
+              // as the agent being dead rather than briefly disconnected.
+              let self: unknown = null;
+              let inventory: unknown = null;
+              let nearbyEntities: unknown = null;
+              try {
+                if (bot.entity !== undefined) {
+                  self = observeSelf(bot);
+                  inventory = observeInventory(bot);
+                  nearbyEntities = observeEntities(bot, 32, 12).entities;
+                }
+              } catch {
+                /* mid-reconnect; report nulls rather than failing the request */
+              }
+
+              return {
+                agentId: identity.id,
+                username: identity.username,
+                description: identity.description,
+                traits: identity.traits,
+                interests: identity.interests,
+                values: identity.values,
+                cycles: agent.cycles(),
+                spentUsd: budget.spentUsd(),
+                budgetUsd: limits.maxUsd,
+                model: provider.model,
+                running: budget.stopped() === null,
+                pendingInjections: inbox.pending(),
+                recentlyHeard: hearing.recent(),
+                self,
+                inventory,
+                nearbyEntities,
+                startedAt: startedAt,
+              };
+            },
+            map: (radius) => {
+              try {
+                return bot.entity === undefined ? null : observeMapTiles(bot, radius);
+              } catch {
+                return null;
+              }
+            },
             stop: (reason) => shutdown(reason),
           },
           log,

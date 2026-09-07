@@ -27,7 +27,10 @@ const MAX_BODY_BYTES = 8 * 1024;
 export interface ControlState {
   agentId: string;
   username: string;
+  description: string;
   traits: string[];
+  interests: string[];
+  values: string[];
   cycles: number;
   spentUsd: number;
   budgetUsd: number;
@@ -35,6 +38,11 @@ export interface ControlState {
   running: boolean;
   pendingInjections: number;
   recentlyHeard: unknown[];
+  /** Null before the bot has spawned. */
+  self: unknown;
+  inventory: unknown;
+  nearbyEntities: unknown;
+  startedAt: string;
 }
 
 export interface ControlHandlers {
@@ -43,6 +51,8 @@ export interface ControlHandlers {
   /** Queue an operator instruction for the next decision. */
   inject: (from: string, text: string) => boolean;
   state: () => ControlState;
+  /** Top-down surface view. Expensive, so the dashboard polls it rarely. */
+  map: (radius: number) => unknown;
   stop: (reason: string) => void;
 }
 
@@ -90,6 +100,17 @@ export function startControlServer(
           return;
         }
 
+        if (req.method === 'GET' && url.pathname === '/map') {
+          const requested = Number(url.searchParams.get('radius') ?? '20');
+          // Cost is quadratic in radius, so cap it rather than trusting the
+          // caller -- a stray ?radius=500 would freeze the agent.
+          const radius = Number.isFinite(requested)
+            ? Math.max(4, Math.min(40, Math.trunc(requested)))
+            : 20;
+          json(res, 200, handlers.map(radius));
+          return;
+        }
+
         if (req.method === 'POST' && (url.pathname === '/say' || url.pathname === '/tell')) {
           const raw = await readBody(req);
           const parsed: unknown = raw === '' ? {} : JSON.parse(raw);
@@ -129,7 +150,10 @@ export function startControlServer(
           return;
         }
 
-        json(res, 404, { error: 'not found', endpoints: ['/state', '/say', '/tell', '/stop'] });
+        json(res, 404, {
+          error: 'not found',
+          endpoints: ['/state', '/map', '/say', '/tell', '/stop'],
+        });
       } catch (err) {
         log.error('control', err);
         json(res, 400, { error: err instanceof Error ? err.message : String(err) });

@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MC-Civ-Sim</title>
+    <link rel="stylesheet" href="/style.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%235b8c3f'/><rect y='9' width='16' height='7' fill='%236b4f32'/></svg>"
+    />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">MC-Civ-Sim</span>
+      </div>
+
+      <nav class="agent-tabs" id="agent-tabs" aria-label="Agents"></nav>
+
+      <div class="topbar-right">
+        <span class="conn" id="conn" data-state="connecting">connecting</span>
+      </div>
+    </header>
+
+    <main class="layout" id="layout">
+      <!-- ---------------------------------------------------------------- -->
+      <section class="panel panel-identity" aria-labelledby="identity-heading">
+        <h2 id="identity-heading">Who</h2>
+        <div id="identity" class="identity">
+          <p class="empty">No agent selected.</p>
+        </div>
+
+        <h3 class="subhead">Vitals</h3>
+        <div id="vitals" class="vitals"></div>
+
+        <h3 class="subhead">Budget</h3>
+        <div id="budget" class="budget"></div>
+      </section>
+
+      <!-- ---------------------------------------------------------------- -->
+      <section class="panel panel-map" aria-labelledby="map-heading">
+        <div class="panel-head">
+          <h2 id="map-heading">Map</h2>
+          <div class="map-controls">
+            <label class="control">
+              <span>radius</span>
+              <input id="map-radius" type="range" min="8" max="40" step="4" value="20" />
+              <output id="map-radius-out">20</output>
+            </label>
+            <label class="control checkbox">
+              <input id="map-trail" type="checkbox" checked />
+              <span>trail</span>
+            </label>
+            <label class="control checkbox">
+              <input id="map-marks" type="checkbox" checked />
+              <span>marks</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="map-wrap">
+          <canvas id="map" width="720" height="720" role="img"
+                  aria-label="Top-down map of the area around the selected agent"></canvas>
+          <div class="map-readout" id="map-readout"></div>
+        </div>
+
+        <div class="legend" id="legend"></div>
+      </section>
+
+      <!-- ---------------------------------------------------------------- -->
+      <section class="panel panel-inventory" aria-labelledby="inv-heading">
+        <h2 id="inv-heading">Inventory</h2>
+        <div id="inventory" class="inventory"></div>
+
+        <h3 class="subhead">Nearby</h3>
+        <div id="nearby" class="nearby"></div>
+      </section>
+
+      <!-- ---------------------------------------------------------------- -->
+      <section class="panel panel-talk" aria-labelledby="talk-heading">
+        <h2 id="talk-heading">Talk</h2>
+
+        <div class="talk-log" id="talk-log" aria-live="polite"></div>
+
+        <form class="talk-form" id="talk-form">
+          <div class="mode-switch" role="radiogroup" aria-label="Message kind">
+            <label class="mode">
+              <input type="radio" name="mode" value="say" checked />
+              <span>Say</span>
+            </label>
+            <label class="mode">
+              <input type="radio" name="mode" value="tell" />
+              <span>Instruct</span>
+            </label>
+          </div>
+
+          <div class="talk-input">
+            <input
+              id="talk-text"
+              type="text"
+              autocomplete="off"
+              placeholder="Say something to the agent…"
+              aria-label="Message"
+            />
+            <button type="submit" id="talk-send">Send</button>
+          </div>
+          <p class="hint" id="talk-hint">
+            <strong>Say</strong> is conversation — the agent may reply or ignore it.
+          </p>
+        </form>
+      </section>
+
+      <!-- ---------------------------------------------------------------- -->
+      <section class="panel panel-decisions" aria-labelledby="dec-heading">
+        <div class="panel-head">
+          <h2 id="dec-heading">Decisions</h2>
+          <span class="muted" id="decisions-count"></span>
+        </div>
+        <ol class="decisions" id="decisions"></ol>
+      </section>
+
+      <!-- ---------------------------------------------------------------- -->
+      <section class="panel panel-actions" aria-labelledby="act-heading">
+        <h2 id="act-heading">Actions</h2>
+        <div id="actions" class="actions"></div>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

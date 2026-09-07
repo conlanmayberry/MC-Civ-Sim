@@ -163,7 +163,17 @@ export function createAgent(options: AgentOptions): Agent {
     for (const call of outcome.toolCalls) {
       if (stopping !== null) break;
 
-      const result = await invokeTool(actions, (message) => bot.chat(message), call.name, call.args);
+      const result = await invokeTool(
+        actions,
+        (message) => {
+          bot.chat(message);
+          // Record it: the agent does not hear itself, so without this its own
+          // replies exist nowhere and every conversation reads one-sided.
+          log.event('chat_sent', { message, cycle });
+        },
+        call.name,
+        call.args,
+      );
       results.push(describeForModel(call.name, result));
 
       // A failure is information, not an error: the model sees it next turn and

@@ -93,6 +93,7 @@ version must match the server exactly.
 | `dry-run-agent.bat` | runs the agent loop with no API calls — **free** |
 | `start-agent.bat` | runs the agent for real — **spends money** |
 | `talk-to-agent.bat` | chat with a running agent from a terminal |
+| `dashboard.bat` | open the web dashboard |
 
 They change to the project directory themselves and install dependencies on
 first run, so they work from anywhere.
@@ -265,6 +266,34 @@ npm run scenario:bootstrap
 It reports per-capability rather than pass/fail overall, and will say
 "NOT demonstrated" rather than claiming success when steps were skipped for
 world reasons.
+
+## Dashboard
+
+```bash
+npm run dashboard
+```
+
+Then open **http://127.0.0.1:25590** (or double-click `dashboard.bat`, which
+opens the browser for you).
+
+| panel | shows |
+|---|---|
+| **Who** | name, description, traits, interests, values; health, food, position, spend against budget |
+| **Map** | top-down surface view built from what the agent can see, with its facing, where it has been, and blocks it mined or placed |
+| **Inventory** | every stack it is carrying, and nearby entities |
+| **Talk** | the whole conversation — what was said to it, what it said back, and operator instructions in gold |
+| **Decisions** | each decision with its trigger, one-line reason, tools called and cost |
+| **Actions** | success rate and average duration per action |
+
+Agents appear as tabs across the top; a green dot means live. Agents that have
+run before but are stopped are still selectable, so you can read the history of
+a finished run.
+
+It works with no agent running — live panels go quiet, history still loads.
+
+**The map is what the agent can see, not the truth.** Unloaded chunks are blank
+rather than filled in from the server, which keeps the imperfect-information
+property the experiment depends on ([ADR-005](docs/decisions.md#adr-005--observations-are-pure-serialisable-and-bounded)).
 
 ## Inspecting telemetry
 
