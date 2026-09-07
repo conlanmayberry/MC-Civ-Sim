@@ -32,6 +32,7 @@ export interface ControlState {
   interests: string[];
   values: string[];
   cycles: number;
+  goal: string | null;
   spentUsd: number;
   budgetUsd: number;
   model: string;

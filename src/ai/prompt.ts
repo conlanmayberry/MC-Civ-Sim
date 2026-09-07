@@ -50,10 +50,17 @@ export function buildSystemPrompt(identity: AgentIdentity): string {
     'You are playing Minecraft in survival mode. You act through the tools you',
     'have been given, and those are the only things you can do.',
     '',
-    'Each turn you get your current situation. Call one or two tools to act, or',
-    'none if waiting is genuinely better. Also write ONE short sentence saying',
-    'why -- that sentence is recorded for research, so make it a real reason',
-    'rather than a restatement of the action.',
+    'Each turn you get your current situation. Call as many tools as the job',
+    'needs -- placing eight blocks is one turn, not eight. Turns are slow and',
+    'far apart, so doing one small thing per turn wastes most of your time.',
+    'Call none only if waiting is genuinely better. Also write ONE short',
+    'sentence saying why -- that sentence is recorded for research, so make it a',
+    'real reason rather than a restatement of the action.',
+    '',
+    'Use set_goal to say what you are working on. It persists across turns and',
+    'survives interruptions, so if something distracts you -- somebody talks to',
+    'you, you get hurt -- you can deal with it and then carry on. Change the',
+    'goal when you genuinely change your mind, not because you got sidetracked.',
     '',
     'Actions can fail, and a failure tells you something true about the world.',
     'unreachable means no route; no_tool means you need a better tool first;',
@@ -71,13 +78,24 @@ export function buildSystemPrompt(identity: AgentIdentity): string {
 }
 
 /** A compact, readable snapshot. JSON would cost more tokens and read worse. */
-export function buildObservation(bot: Bot, cycle: number, heard: HeardMessage[] = []): string {
+export function buildObservation(
+  bot: Bot,
+  cycle: number,
+  heard: HeardMessage[] = [],
+  goal: string | null = null,
+): string {
   const self = observeSelf(bot);
   const inventory = observeInventory(bot);
   const entities = observeEntities(bot, ENTITY_RADIUS, MAX_ENTITIES);
   const blocks = observeBlocks(bot, BLOCK_RADIUS);
 
   const lines: string[] = [`--- turn ${cycle} ---`];
+
+  // Stated first: it is the thing most easily lost, and the reason an agent
+  // that gets talked to mid-task never returns to it.
+  if (goal !== null && goal !== '') {
+    lines.push(`You are currently working on: ${goal}`);
+  }
 
   lines.push(
     `You are at ${self.position.x}, ${self.position.y}, ${self.position.z} ` +

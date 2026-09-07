@@ -46,7 +46,8 @@ export type EventType =
   | 'thought_injected'
   | 'budget_warning'
   | 'agent_started'
-  | 'agent_stopped';
+  | 'agent_stopped'
+  | 'goal_set';
 
 export interface TelemetryEvent {
   readonly timestamp: string;

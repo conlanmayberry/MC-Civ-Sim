@@ -257,6 +257,7 @@ session = connect(
                 interests: identity.interests,
                 values: identity.values,
                 cycles: agent.cycles(),
+                goal: agent.goal(),
                 spentUsd: budget.spentUsd(),
                 budgetUsd: limits.maxUsd,
                 model: provider.model,

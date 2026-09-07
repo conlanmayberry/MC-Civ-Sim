@@ -131,6 +131,17 @@ export const TOOL_SCHEMAS: readonly ToolSchema[] = [
     }),
   },
   {
+    name: 'set_goal',
+    description:
+      'State what you are working on. It is shown to you every turn and ' +
+      'persists until you change it, so use it for anything spanning more than ' +
+      'one turn. Change it when you genuinely change your mind, not because ' +
+      'something interrupted you.',
+    parameters: object({
+      goal: str('A short description, e.g. "build a shelter before nightfall".'),
+    }),
+  },
+  {
     name: 'send_chat',
     description:
       'Say something in Minecraft chat. Other players and agents will see it. ' +
@@ -177,6 +188,7 @@ export async function invokeTool(
   sendChat: (message: string) => void,
   name: string,
   args: Record<string, unknown>,
+  setGoal: (goal: string) => void = () => {},
 ): Promise<ActionResult> {
   const fail = (message: string): ActionResult => ({
     ok: false,
@@ -236,6 +248,12 @@ export async function invokeTool(
             ? (raw as EquipDestination)
             : 'hand';
         return await actions.equipItem(reqStr(args['item'], 'item'), destination);
+      }
+
+      case 'set_goal': {
+        const goal = reqStr(args['goal'], 'goal').slice(0, 200);
+        setGoal(goal);
+        return { ok: true, action: 'set_goal', durationMs: 0, detail: { goal } };
       }
 
       case 'send_chat': {

@@ -60,6 +60,9 @@ describe('tool schemas', () => {
   });
 
   test('the surface is closed -- no escape hatches', () => {
+    // An exact list on purpose: the tool surface is the security boundary, so
+    // it must not grow without a person deciding it should. Updating this
+    // assertion is the deliberate act.
     const names = TOOL_SCHEMAS.map((t) => t.name).sort();
     assert.deepEqual(names, [
       'collect_items',
@@ -71,6 +74,9 @@ describe('tool schemas', () => {
       'move_to',
       'place_block',
       'send_chat',
+      // set_goal only stores a string the agent shows itself next turn. It
+      // touches nothing outside the process.
+      'set_goal',
       'stop_movement',
     ]);
     // Principle 16: nothing that runs code, reads files or touches the host.
@@ -150,6 +156,23 @@ describe('tool dispatch', () => {
     const result = await invokeTool(stubActions([]), () => {}, 'move_to', { x: 'over there' });
     assert.equal(result.ok, false);
     assert.equal(result.error?.code, 'invalid_argument');
+  });
+
+  test('set_goal records the goal without touching the world', async () => {
+    const calls: string[] = [];
+    let recorded: string | null = null;
+    const result = await invokeTool(
+      stubActions(calls),
+      () => {},
+      'set_goal',
+      { goal: 'build a shelter before nightfall' },
+      (g) => {
+        recorded = g;
+      },
+    );
+    assert.equal(result.ok, true);
+    assert.equal(recorded, 'build a shelter before nightfall');
+    assert.deepEqual(calls, [], 'set_goal must not perform any world action');
   });
 
   test('send_chat routes to chat rather than to an action', async () => {

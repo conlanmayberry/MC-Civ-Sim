@@ -302,6 +302,24 @@ body {
   margin: 10px 0 5px;
 }
 
+/* ------------------------------------------------------------------ goal */
+
+.goal {
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--grass);
+  border-radius: 6px;
+  padding: 9px 11px;
+}
+
+.goal.none {
+  color: var(--ink-faint);
+  font-style: italic;
+  border-left-color: var(--line-bright);
+}
+
 /* ---------------------------------------------------------------- vitals */
 
 .vitals {

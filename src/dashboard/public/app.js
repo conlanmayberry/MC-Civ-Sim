@@ -22,6 +22,7 @@ const ui = {
   tabs: el('agent-tabs'),
   conn: el('conn'),
   identity: el('identity'),
+  goal: el('goal'),
   vitals: el('vitals'),
   budget: el('budget'),
   inventory: el('inventory'),
@@ -216,10 +217,14 @@ function select(agentId, port) {
 function renderIdentity(s) {
   if (!s) {
     ui.identity.innerHTML = `<p class="empty">This agent is not running. History is still shown below.</p>`;
+    ui.goal.innerHTML = '';
     ui.vitals.innerHTML = '';
     ui.budget.innerHTML = '';
     return;
   }
+
+  ui.goal.className = s.goal ? 'goal' : 'goal none';
+  ui.goal.textContent = s.goal ?? 'nothing set yet';
 
   const tagRow = (label, items, cls) =>
     items && items.length

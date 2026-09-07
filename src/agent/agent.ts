@@ -53,6 +53,8 @@ export interface Agent {
   hear: (from: string, text: string, distance: number | null) => void;
   stop: (reason: string) => void;
   cycles: () => number;
+  /** What the agent says it is working on, for the dashboard. */
+  goal: () => string | null;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -68,12 +70,25 @@ const LOW_HEALTH = 10;
  * "transient" becoming "forever".
  */
 const MAX_CONSECUTIVE_FAILURES = 5;
+/**
+ * Ceiling on tool calls in one decision.
+ *
+ * The model is encouraged to batch -- placing eight blocks should be one turn,
+ * not eight -- but an unbounded list could run for many minutes with no chance
+ * to reconsider, which is exactly the wedge the interval exists to avoid.
+ */
+const MAX_TOOL_CALLS = 10;
+/** And a wall-clock ceiling, since a batch of moves can be slow rather than many. */
+const MAX_ACTING_MS = 120_000;
 
 export function createAgent(options: AgentOptions): Agent {
   const { identity, provider, budget, inbox, hearing, log } = options;
 
   const system = buildSystemPrompt(identity);
   let history: string[] = [];
+  // Survives interruptions on purpose: an agent that gets spoken to mid-task
+  // and never returns to it was the whole problem this solves.
+  let goal: string | null = null;
   let cycle = 0;
   let stopping: string | null = null;
   let wakeEarly: (() => void) | null = null;
@@ -120,7 +135,7 @@ export function createAgent(options: AgentOptions): Agent {
     // takeNew, not recent: each message is presented once as fresh. The
     // window in `recent` still gives continuity through history.
     const heard = hearing.takeNew();
-    const observation = buildObservation(bot, cycle, heard);
+    const observation = buildObservation(bot, cycle, heard, goal);
 
     const outcome = await provider.decide({
       system,
@@ -144,6 +159,7 @@ export function createAgent(options: AgentOptions): Agent {
       summary: outcome.summary,
       tools: outcome.toolCalls.map((c) => c.name),
       args: outcome.toolCalls.map((c) => c.args),
+      goal,
       model: outcome.model,
       inputTokens: outcome.usage.inputTokens,
       cachedTokens: outcome.usage.cachedTokens,
@@ -160,8 +176,17 @@ export function createAgent(options: AgentOptions): Agent {
     }
 
     const results: string[] = [];
-    for (const call of outcome.toolCalls) {
+    const actingDeadline = Date.now() + MAX_ACTING_MS;
+
+    for (const call of outcome.toolCalls.slice(0, MAX_TOOL_CALLS)) {
       if (stopping !== null) break;
+      if (Date.now() > actingDeadline) {
+        // Stopping here rather than pressing on: the world has moved since the
+        // decision was made, and continuing to execute a stale plan is worse
+        // than reconsidering with fresh eyes.
+        results.push('(ran out of time; remaining steps skipped)');
+        break;
+      }
 
       const result = await invokeTool(
         actions,
@@ -173,6 +198,10 @@ export function createAgent(options: AgentOptions): Agent {
         },
         call.name,
         call.args,
+        (next) => {
+          goal = next;
+          log.event('goal_set', { goal: next, cycle });
+        },
       );
       results.push(describeForModel(call.name, result));
 
@@ -181,12 +210,17 @@ export function createAgent(options: AgentOptions): Agent {
       if (!result.ok && result.error?.code === 'interrupted') break;
     }
 
+    if (outcome.toolCalls.length > MAX_TOOL_CALLS) {
+      results.push(`(only the first ${MAX_TOOL_CALLS} of ${outcome.toolCalls.length} were run)`);
+    }
+
     history.push(`Turn ${cycle}: ${outcome.summary}\n${results.join('\n')}`);
     history = trimHistory(history);
   }
 
   return {
     cycles: () => cycle,
+    goal: () => goal,
 
     stop(reason) {
       stopping ??= reason;
