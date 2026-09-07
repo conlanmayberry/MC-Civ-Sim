@@ -7,6 +7,7 @@
  *     npm run telemetry actions         what was attempted, and how it went
  *     npm run telemetry inventory       state snapshots over time
  *     npm run telemetry errors          what failed, and why
+ *     npm run telemetry latency [all]   how long the agent takes to respond
  *     npm run telemetry sql "SELECT..." anything else
  *
  * The subcommands exist to answer the six questions the project brief sets as
@@ -22,6 +23,8 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 
 import { DEFAULT_DB_PATH } from './index.ts';
+import type { ChatEventRow, Reply, Unanswered } from './latency.ts';
+import { distribution, pairReplies, percentile, secs, triggerKind } from './latency.ts';
 
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
@@ -192,6 +195,160 @@ switch (subcommand) {
     break;
   }
 
+  case 'latency': {
+    // How long the agent leaves somebody waiting -- the number that decides
+    // whether it reads as present or absent. Broken into what the wait is
+    // actually made of: waiting for the clock, thinking, and acting first.
+    const scope = args[0] ?? 'last';
+    const runs =
+      scope === 'all'
+        ? query(`SELECT run_id FROM runs ORDER BY started_at`).map((r) => String(r['run_id']))
+        : query(`SELECT run_id FROM runs ORDER BY started_at DESC LIMIT 1`).map((r) =>
+            String(r['run_id']),
+          );
+
+    if (runs.length === 0) {
+      console.log(`  ${DIM}(no runs yet)${RESET}`);
+      break;
+    }
+
+    const usernames = new Map(
+      query(`SELECT agent_id, username FROM agents`).map((r) => [
+        String(r['agent_id']),
+        String(r['username']),
+      ]),
+    );
+
+    const perRun: Row[] = [];
+    const allReplies: Reply[] = [];
+    const allUnanswered: Unanswered[] = [];
+
+    for (const runId of runs) {
+      const agents = query(
+        `SELECT DISTINCT agent_id FROM events WHERE run_id = ? AND agent_id IS NOT NULL`,
+        runId,
+      ).map((r) => String(r['agent_id']));
+
+      const runReplies: Reply[] = [];
+      for (const agentId of agents) {
+        const chat = query(
+          `SELECT timestamp, event_type, data FROM events
+           WHERE run_id = ? AND agent_id = ? AND event_type IN ('chat_received', 'chat_sent')
+           ORDER BY id`,
+          runId,
+          agentId,
+        );
+        const { replies, unanswered } = pairReplies(
+          chat as unknown as ChatEventRow[],
+          usernames.get(agentId) ?? agentId,
+        );
+        runReplies.push(...replies);
+        allUnanswered.push(...unanswered);
+      }
+      allReplies.push(...runReplies);
+
+      const think = query(
+        `SELECT duration_ms FROM events
+         WHERE run_id = ? AND event_type = 'decision' AND duration_ms IS NOT NULL`,
+        runId,
+      )
+        .map((r) => Number(r['duration_ms']))
+        .sort((a, b) => a - b);
+
+      const waits = runReplies.map((r) => r.waitedMs).sort((a, b) => a - b);
+      perRun.push({
+        run: runId,
+        replies: runReplies.length,
+        reply_p50: waits.length === 0 ? '' : secs(percentile(waits, 50)),
+        reply_max: waits.length === 0 ? '' : secs(waits.at(-1) ?? 0),
+        decisions: think.length,
+        think_p50: think.length === 0 ? 'n/a' : secs(percentile(think, 50)),
+      });
+    }
+
+    if (scope === 'all') {
+      // One row per run, so a change made between runs shows up as a change.
+      console.log(`${BOLD}  Response time by run${RESET} ${DIM}oldest first${RESET}`);
+      table(perRun);
+      console.log('');
+    }
+
+    console.log(`${BOLD}  Reply latency${RESET} ${DIM}somebody speaks -> the agent answers${RESET}`);
+    table([
+      distribution('addressed by name', allReplies.filter((r) => r.directed).map((r) => r.waitedMs)),
+      distribution('spoken to nearby', allReplies.filter((r) => !r.directed).map((r) => r.waitedMs)),
+      distribution('all', allReplies.map((r) => r.waitedMs)),
+    ]);
+
+    if (allUnanswered.length > 0) {
+      console.log('');
+      console.log(
+        `${BOLD}  Never answered${RESET} ${RED}${allUnanswered.length}${RESET}` +
+          ` ${DIM}(silence can be a decision -- worth checking it was a deliberate one)${RESET}`,
+      );
+      table(
+        allUnanswered.slice(-8).map((m) => ({
+          time: m.at.slice(11, 19),
+          from: m.from,
+          named: m.directed ? 'yes' : '',
+          message: m.text.slice(0, 50),
+        })),
+      );
+    }
+
+    const slowest = [...allReplies].sort((a, b) => b.waitedMs - a.waitedMs).slice(0, 6);
+    if (slowest.length > 0) {
+      console.log('');
+      console.log(`${BOLD}  Slowest replies${RESET}`);
+      table(
+        slowest.map((r) => ({
+          asked: new Date(r.askedAt).toISOString().slice(11, 19),
+          waited: secs(r.waitedMs),
+          named: r.directed ? 'yes' : '',
+          msgs: r.burst,
+          from: r.from,
+          message: r.text.slice(0, 44),
+        })),
+      );
+    }
+
+    // What the wait was spent on. Thinking is dead air by design; waiting for
+    // the clock is the part that is cheap to fix.
+    const placeholders = runs.map(() => '?').join(', ');
+    const decisions = query(
+      `SELECT duration_ms, json_extract(data, '$.trigger') AS trigger
+       FROM events WHERE event_type = 'decision' AND run_id IN (${placeholders})
+       ORDER BY id`,
+      ...runs,
+    );
+
+    const byTrigger = new Map<string, number[]>();
+    for (const row of decisions) {
+      if (row['duration_ms'] === null) continue;
+      const kind = triggerKind(String(row['trigger'] ?? 'interval'));
+      const list = byTrigger.get(kind) ?? [];
+      list.push(Number(row['duration_ms']));
+      byTrigger.set(kind, list);
+    }
+
+    console.log('');
+    if (byTrigger.size === 0) {
+      console.log(
+        `${BOLD}  Thinking time${RESET} ${DIM}not recorded before this was added -- ` +
+          `start a fresh run to collect it${RESET}`,
+      );
+    } else {
+      console.log(`${BOLD}  Thinking time${RESET} ${DIM}model latency, by what woke it${RESET}`);
+      table(
+        [...byTrigger.entries()]
+          .sort((a, b) => b[1].length - a[1].length)
+          .map(([kind, samples]) => distribution(kind, samples)),
+      );
+    }
+
+    break;
+  }
+
   case 'sql': {
     const sql = args.join(' ');
     if (sql === '') {
@@ -210,7 +367,9 @@ switch (subcommand) {
 
   default:
     console.error(`  Unknown subcommand "${subcommand}".`);
-    console.error(`  ${DIM}summary | timeline [n] | actions | errors | inventory | sql "..."${RESET}`);
+    console.error(
+      `  ${DIM}summary | timeline [n] | actions | errors | inventory | latency [all] | sql "..."${RESET}`,
+    );
     process.exit(1);
 }
 

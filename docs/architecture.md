@@ -116,6 +116,7 @@ npm run telemetry timeline 40  # what happened, in order, with locations
 npm run telemetry actions      # attempts, success rate, durations
 npm run telemetry errors       # failures grouped by code
 npm run telemetry inventory    # snapshots over time
+npm run telemetry latency      # reply latency, thinking time, unanswered
 npm run telemetry sql "SELECT ..."
 ```
 

@@ -94,6 +94,7 @@ version must match the server exactly.
 | `start-agent.bat` | runs the agent for real — **spends money** |
 | `talk-to-agent.bat` | chat with a running agent from a terminal |
 | `dashboard.bat` | open the web dashboard |
+| `response-times.bat` | how long the agent takes to answer; pass `all` to compare runs |
 
 They change to the project directory themselves and install dependencies on
 first run, so they work from anywhere.
@@ -303,6 +304,8 @@ npm run telemetry timeline 40     # what happened, in order, with locations
 npm run telemetry actions         # attempts, success rate, durations
 npm run telemetry errors          # failures grouped by error code
 npm run telemetry inventory       # state snapshots over time
+npm run telemetry latency         # how long it takes to answer somebody
+npm run telemetry latency all     # ... per run, so a change shows as a change
 npm run telemetry sql "SELECT ..."
 ```
 
