@@ -5,70 +5,74 @@ and what would make us revisit it.
 
 ---
 
-## ADR-001 — Target Minecraft 26.1.2 (Paper build 74), not 1.21.11
+## ADR-001 — Target Minecraft 1.21.8 (Paper build 60)
 
-**Date:** 2026-09-06
-**Status:** Accepted
-**Supersedes:** the version guidance in the original project brief
+**Date:** 2026-09-06, superseding the same-day decision to target 26.1.2
+**Status:** accepted
 
-### Context
+The server is pinned to **Minecraft 1.21.8, Paper build 60**
+([minecraft/config/paper-version.json](../minecraft/config/paper-version.json)).
 
-The project brief specified Minecraft 1.21.11, on the stated grounds that
-"Mineflayer currently documents support through 1.21.11". That premise no longer
-holds — Mojang has moved to calendar versioning, and both Mineflayer and Paper
-have moved with it.
+### Why this changed twice in one day
 
-Verified from primary sources on 2026-09-06:
+The first version of this ADR chose **26.1.2**, on the reasoning that it was the
+newest release supported by both Paper and Mineflayer, and that the brief's
+suggested 1.21.11 was end-of-life on Paper. That reasoning was sound but
+incomplete: "supported" meant the protocol was modelled, not that the bot could
+function.
 
-| Fact | Source |
-|---|---|
-| Mineflayer 4.39.0 (published 2026-09-06) `testedVersions` ends at `26.1`; requires Node ≥22 | [`mineflayer/lib/version.js`](https://github.com/PrismarineJS/mineflayer/blob/master/lib/version.js) |
-| `minecraft-data` has a data path for `26.1` but **not** `26.2` | [`minecraft-data/data/dataPaths.json`](https://github.com/PrismarineJS/minecraft-data/blob/master/data/dataPaths.json) |
-| Latest Mojang release is `26.2` | Mojang `version_manifest_v2.json` |
-| Paper **1.21.11 is UNSUPPORTED** — support ended 2026-06-15, last build #132 (2026-05-11) | `fill.papermc.io/v3` |
-| Paper **26.1.2 is SUPPORTED** — build #74 (2026-07-06), Java minimum 25 | `fill.papermc.io/v3` |
-| MC `26.1`, `26.1.1` and `26.1.2` all share **protocol 775** (`majorVersion: 26.1`) | `minecraft-data/protocolVersions.json` |
+Stage 3 found the gap. `mineflayer-pathfinder` **wedges** on 26.1.x in normal
+terrain — it computes a route, executes part of it, then stops while
+`isMoving()` still reports true, so `goto` never settles and the caller hangs.
+A controlled benchmark (`npm run diagnose:pathfinder`, four temporary servers,
+identical settings):
 
-This is a squeeze from both directions: 26.2 is too new for Mineflayer (no
-`minecraft-data` entry), and 1.21.11 is too old for Paper (end-of-life). Exactly
-one release line satisfies both.
+| version | world | reached | wedged |
+|---|---|---|---|
+| 26.1.2 | superflat | 3/3 | 0 |
+| **26.1.2** | **normal** | **0/3** | **3** |
+| 1.21.8 | superflat | 3/3 | 0 |
+| **1.21.8** | **normal** | **1/3** | **0** |
 
-### Decision
+That is [mineflayer-pathfinder#366](https://github.com/PrismarineJS/mineflayer-pathfinder/issues/366),
+isolated to the version. Full history in [ADR-008](#adr-008--stage-3-was-blocked-by-2612-resolved-by-moving-to-1218).
 
-Target **Minecraft 26.1.2**, Paper build **74**, JDK **25**.
+### The trade, stated plainly
 
-The build is pinned with its SHA-256 in `minecraft/config/paper-version.json`.
-`npm run minecraft:setup` verifies the checksum on every run and refuses to
-write a mismatched file. Upgrades are a deliberate edit to that file;
-`npm run minecraft:check-latest` reports available updates but never applies
-them, so a given commit always reproduces the same server binary.
+Paper's support for 1.21.8 **ended 2025-11-14**. We are running a server that
+will receive no further updates, in exchange for a bot that can actually
+navigate. For a local, loopback-only research instrument that is the right way
+round — an unsupported server on a machine nothing can reach costs us little,
+while a bot that cannot walk costs us every stage from 3 onwards.
 
-### Known risk
+### Verified after the change
 
-Mineflayer's test matrix contains `26.1` (dataVersion 4786); we will run 26.1.2
-(dataVersion 4790). The protocol number is identical, so the handshake and
-packet layer are fine, but registry/recipe data could have drifted slightly
-between the two point releases.
+- Paper 1.21.8-60 boots clean, **0 errors** (26.1.2 left config files a 1.21.8
+  server warns about; they are archived, not deleted).
+- `npm run bot:probe` — **7/7**, 8,125 live blocks decoded against the `1.21`
+  palette with no inconsistencies.
+- `npm run bot:probe-path` — **GATE PASSED**, 3/3 with digging allowed, 2/3
+  walk-only, **zero wedges**.
+- `npm run scenario:bootstrap` — **Stage 3 criterion met**.
 
-**This is unverified until Stage 2 exercises it.** Stage 2's acceptance work must
-specifically confirm that block, item and recipe lookups behave, not just that
-the bot connects.
+### The world could not come along
 
-**Fallback if it bites:** drop the server to plain `26.1`, which Paper still
-publishes. That is a one-line change to the pin file plus a re-run of setup — no
-application code is affected.
+Minecraft upgrades worlds silently and never downgrades them, so the 26.1.2
+`civ-sim-world` cannot be opened by 1.21.8 — attempting it corrupts the world,
+and not visibly until much later. It is preserved at
+`minecraft/server/civ-sim-world.26.1.2-archived` and a fresh world was
+generated.
 
-### Revisit when
+`scripts/start-server.mjs` now **refuses to start** when the world's recorded
+version does not match the pin, and prints the command to move it aside. That
+guard exists because losing a world mid-experiment invalidates the experiment,
+and the failure is otherwise silent.
 
-- `minecraft-data` gains a `26.2` data path *and* Mineflayer adds `26.2` to
-  `testedVersions` — then a considered upgrade becomes possible.
-- Paper marks 26.1.2 UNSUPPORTED.
-- Stage 2 uncovers a real 26.1 ↔ 26.1.2 data incompatibility.
+### Revisit if
 
-Do not upgrade merely because a newer Minecraft release exists. Paper supporting
-a version is *not* sufficient; Mineflayer and `minecraft-data` gate the decision.
-
----
+Mineflayer-pathfinder fixes #366, at which point moving to a supported Minecraft
+becomes attractive again. `npm run diagnose:pathfinder` is the test that decides
+it, and it takes about eight minutes.
 
 ## ADR-002 — `online-mode=false` paired with a loopback-only bind
 
@@ -374,20 +378,18 @@ better than a hollow success.
 
 ---
 
-## ADR-008 — Stage 3 is code-complete but cannot be demonstrated on 26.1.2
+## ADR-008 — Stage 3 was blocked by 26.1.2; resolved by moving to 1.21.8
 
 **Date:** 2026-09-06 (Stage 3)
-**Status:** **open decision for the operator**
+**Status:** **resolved** — the version was changed; see [ADR-001](#adr-001--target-minecraft-1218-paper-build-60)
 
-The Stage 3 action layer is written, type-checked and unit-tested (15/15). The
-brief's success criterion -- gather wood, craft, place, move, eat -- **cannot be
-demonstrated on our 26.1.2 world**, because pathfinding does not work in real
-terrain. This is not a code defect in this repository.
+Stage 3's action layer was written, type-checked and unit-tested, but its
+success criterion could not be demonstrated: pathfinding did not work on 26.1.2
+in real terrain. Nothing was wrong with the code in this repository.
 
-### Evidence
+### What was measured
 
-Controlled 2x2 benchmark (`npm run diagnose:pathfinder`), temporary servers,
-identical settings, three `goto` attempts at ~15m:
+Controlled 2x2 benchmark, temporary servers, identical settings:
 
 | version | world | reached | wedged |
 |---|---|---|---|
@@ -396,45 +398,46 @@ identical settings, three `goto` attempts at ~15m:
 | 1.21.8 | superflat | 3/3 | 0 |
 | **1.21.8** | **normal** | **1/3** | **0** |
 
-Pathfinding works fine on flat ground on both versions, so neither the library
-nor our integration is fundamentally broken. On normal terrain, 26.1.2 **wedges
-every time** and 1.21.8 **never** does. That is
-[mineflayer-pathfinder#366](https://github.com/PrismarineJS/mineflayer-pathfinder/issues/366)
-("stuck behind every 1-block obstacle, walking into it instead of jumping",
-1.21.10/1.21.11/26.2 broken, 1.21.8 working), isolated to the version.
+Flat ground worked on both, so neither the library nor our integration was
+fundamentally broken. On normal terrain 26.1.2 **wedged every time** and 1.21.8
+**never** did — mineflayer-pathfinder#366, isolated to the version.
 
-The distinction that matters is *how* they fail. A wedge hangs forever;
-`goto` never settles. A clean failure returns and can be retried -- so on
-1.21.8 our retry logic compounds a 1/3 per-attempt rate into roughly 80% over
-four attempts, while on 26.1.2 retries measurably do not help.
+The distinction that mattered was *how* they failed. A wedge hangs forever; a
+clean failure returns and can be retried.
 
-### Workarounds tried, and why each was insufficient
+### Workarounds tried before changing the version
 
-| Attempt | Result |
+| Attempt | Outcome |
 |---|---|
-| Wedge detector (abort on "moving but not moving") | **Kept.** Converts an unrecoverable hang into a typed `unreachable` in ~2.4s. Necessary, not sufficient. |
-| Retry with a fresh path, plus a jump-and-turn nudge | Kept. Still wedged after 4 attempts. |
-| Try the 12 nearest candidate blocks, not just the closest | Kept -- better in general. All 12 logs still unreachable. |
-| [PR #364](https://github.com/PrismarineJS/mineflayer-pathfinder/pull/364) hitbox patch (`playerHalfWidth` 0.3 → 0.30001) | **Not adopted.** It does stop the wedging, which supports its float-boundary diagnosis, but the bot still never arrives -- it now burns the full timeout making partial progress. Against our wedge detector that trades a 2.4s clean failure for a 25s one. |
+| Wedge detector — abort on "moving but not moving" | **Kept.** Turns an unrecoverable hang into a typed `unreachable` in ~2.4s. Necessary, not sufficient. |
+| Retry with a fresh path plus a jump-and-turn nudge | **Kept.** Still wedged after 4 attempts on 26.1.2; genuinely useful on 1.21.8. |
+| Try the 12 nearest candidate blocks, not just the closest | **Kept.** Better in general; all 12 were still unreachable on 26.1.2. |
+| [PR #364](https://github.com/PrismarineJS/mineflayer-pathfinder/pull/364) hitbox patch (0.3 → 0.30001) | **Rejected.** It did stop the wedging, supporting its float-boundary diagnosis, but the bot still never arrived -- it burned the full timeout instead, turning a 2.4s clean failure into a 25s one. |
 
-The first three are genuine improvements and are kept regardless of what is
-decided below.
+The three kept changes are real improvements and remain in place on 1.21.8.
 
-### The decision
+### Outcome
 
-Stage 4 (telemetry) does **not** depend on movement and could proceed now.
-Stage 3 cannot be signed off until one of:
+After moving to 1.21.8, with no further changes to the action layer:
 
-1. **Move to Minecraft 1.21.8.** New pin, regenerated world, re-verify Stages
-   1-2, revise ADR-001. Paper 1.21.8 is EOL (support ended 2025-11-14), so this
-   trades a supported server for a functional bot.
-2. **Wait for upstream.** #366 is open with no replies since July; #364 is an
-   unmerged fix whose author also renamed the package in the same PR.
-3. **Accept degraded movement on 26.1.2** and design Stage 5 agents to operate
-   locally, treating `unreachable` as normal. Viable but it constrains every
-   later stage that assumes agents can travel.
+- `npm run bot:probe-path` — **GATE PASSED**, 3/3 default, 2/3 walk-only, zero
+  wedges, a 40 m route in 11 s.
+- `npm run scenario:bootstrap` — **7 passed, 0 failed**: gathered 4 spruce logs,
+  crafted planks, sticks and a crafting table, placed the table, and moved out
+  and back. **Stage 3 success criterion met.**
 
-Recorded rather than chosen: it costs the operator a world.
+Two bugs of our own surfaced once movement stopped masking them, both in
+crafting and both recorded here because they are easy to reintroduce:
+
+1. `bot.craft(recipe, count)` runs the recipe `count` **times**, while
+   `bot.recipesFor(id, meta, minResultCount, table)` filters by resulting
+   **items**. Conflating them asked for "4 sticks" as four repetitions, needed
+   eight planks, found seven, and left mineflayer waiting forever on a slot
+   update — surfacing as `Event updateSlot:0 did not fire`. The action now takes
+   items and converts using `recipe.result.count`.
+2. `bot.craft` resolves before the resulting inventory update necessarily
+   arrives, so counting immediately reported a real success as "produced
+   nothing". The count is now polled briefly before judging.
 
 ---
 

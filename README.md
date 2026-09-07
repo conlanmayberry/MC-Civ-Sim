@@ -12,7 +12,7 @@ testable system before the next begins.
 
 ---
 
-## Current stage: **Stage 4 — telemetry ✅** (Stage 3 blocked on movement ⚠️)
+## Current stage: **Stages 1–4 complete ✅**
 
 One bot that connects, observes, obeys chat commands, and has a full
 deterministic action layer — mine, craft, place, move, eat, collect. No AI yet;
@@ -22,12 +22,18 @@ Verified: 15/15 unit tests, 7/7 data checks, 8/8 chat cases, typecheck clean.
 Every action returns a typed result rather than throwing
 ([ADR-007](docs/decisions.md#adr-007--actions-are-typed-results-never-exceptions)).
 
-⚠️ **Pathfinding does not work on Minecraft 26.1.2 in real terrain**, so Stage 3
-cannot be signed off. A controlled benchmark shows 26.1.2 wedging 3/3 on normal
-terrain while 1.21.8 wedges 0/3 — an upstream regression
-([#366](https://github.com/PrismarineJS/mineflayer-pathfinder/issues/366)), not
-a defect here. The decision costs a regenerated world, so it is the operator's:
-see [ADR-008](docs/decisions.md#adr-008--stage-3-is-code-complete-but-cannot-be-demonstrated-on-2612).
+**Stage 3's success criterion is met**: the bot gathers wood, crafts planks,
+sticks and a crafting table, places the table, and navigates out and back —
+7 steps, 0 failures.
+
+That required moving from Minecraft 26.1.2 to **1.21.8**. Pathfinding wedges on
+26.1.x in real terrain (0/3 reached, 3/3 wedged) and does not on 1.21.8 — an
+upstream regression ([#366](https://github.com/PrismarineJS/mineflayer-pathfinder/issues/366)),
+not a defect here. Paper 1.21.8 is EOL, which is a deliberate trade: an
+unsupported server on a loopback-only machine costs little, a bot that cannot
+walk costs every stage from 3 onward. See
+[ADR-001](docs/decisions.md#adr-001--target-minecraft-1218-paper-build-60) and
+[ADR-008](docs/decisions.md#adr-008--stage-3-was-blocked-by-2612-resolved-by-moving-to-1218).
 
 **Stage 4 is done.** Every event and periodic state snapshot is recorded to
 SQLite via `node:sqlite` — no dependency, no native module
@@ -41,14 +47,14 @@ shaped for this in Stage 2, so it was a sink swap. See
 
 | Target | Version | Why |
 |---|---|---|
-| Minecraft | 26.1.2 | newest release supported by *both* Paper and Mineflayer |
-| Paper | build 74 | pinned + SHA-256 verified |
-| Java | 25 | Paper 26.1.2 minimum |
+| Minecraft | 1.21.8 | newest version where mineflayer-pathfinder does not wedge |
+| Paper | build 60 | pinned + SHA-256 verified (EOL 2025-11-14 — see ADR-001) |
+| Java | 21+ | Paper 1.21.8 minimum; verified on Temurin 25 |
 | Node.js | ≥22 | Mineflayer 4.39 requirement |
 
-The version choice differs from the original project brief, which specified
-1.21.11. That version is now end-of-life on Paper. Full reasoning, with sources:
-[ADR-001](docs/decisions.md#adr-001--target-minecraft-2612-paper-build-74-not-12111).
+`npm run minecraft` refuses to start if the existing world was created by a
+different Minecraft version — Minecraft never downgrades a world, and opening
+one with an older server corrupts it silently.
 
 ## Installation
 
@@ -64,7 +70,8 @@ winget install --id Mojang.MinecraftLauncher -e
 ```
 
 Open a **new** terminal so `PATH` updates, then confirm `java -version` reports
-25.x. In the Minecraft launcher, create a **26.1.2** profile.
+21 or newer. In the Minecraft launcher, create a **1.21.8** profile — the client
+version must match the server exactly.
 
 ## Starting Minecraft
 
@@ -209,13 +216,15 @@ the (currently non-secret) configuration.
 - TypeScript with no build step ([ADR-004](docs/decisions.md#adr-004--no-build-step-node-runs-typescript-natively))
 - Two probes: `bot:probe` (data correctness) and `bot:probe-chat` (command replies)
 - SQLite telemetry: events + snapshots, batched, WAL, with a query CLI
+- Nine actions with typed results: move, follow, mine, collect, craft, place, eat, equip, stop
+- World-version guard: refuses to open a world built by a different Minecraft
 
 ## What is not implemented
 
 | Stage | Feature | Status |
 |---|---|---|
 | 2 | Mineflayer bot — connect, observe, chat | **done** |
-| 3 | Deterministic bot actions — mine, craft, place, move | **code complete, blocked** ([ADR-008](docs/decisions.md#adr-008--stage-3-is-code-complete-but-cannot-be-demonstrated-on-2612)) |
+| 3 | Deterministic bot actions — mine, craft, place, move | **done** |
 | 4 | Telemetry event bus + SQLite | **done** |
 | 5 | Claude decision loop | not started |
 | 6 | Agent identity and goals | not started |

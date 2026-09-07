@@ -109,6 +109,49 @@ async function descendFromCanopy(bot: Bot): Promise<void> {
   );
 }
 
+/**
+ * An empty position, within reach, that has something solid to place against.
+ * Mirrors what placeBlock itself requires, so the scenario asks a question the
+ * action can actually answer.
+ */
+function findPlaceableSpot(bot: Bot): { x: number; y: number; z: number } | null {
+  const origin = bot.entity.position;
+  const offsets: Array<[number, number, number]> = [];
+  for (const dy of [0, 1, -1]) {
+    for (const [dx, dz] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+      [1, 1],
+      [-1, -1],
+    ] as Array<[number, number]>) {
+      offsets.push([dx, dy, dz]);
+    }
+  }
+
+  for (const [dx, dy, dz] of offsets) {
+    const target = origin.offset(dx, dy, dz).floored();
+    const here = bot.blockAt(target);
+    if (here === null || here.boundingBox !== 'empty') continue;
+
+    const supports: Array<[number, number, number]> = [
+      [0, -1, 0],
+      [1, 0, 0],
+      [-1, 0, 0],
+      [0, 0, 1],
+      [0, 0, -1],
+      [0, 1, 0],
+    ];
+    const hasSupport = supports.some(
+      (offset) => bot.blockAt(target.offset(offset[0], offset[1], offset[2]))?.boundingBox === 'block',
+    );
+
+    if (hasSupport) return { x: target.x, y: target.y, z: target.z };
+  }
+  return null;
+}
+
 async function run(bot: Bot, actions: Actions): Promise<void> {
   console.log(`${BOLD}  Stage 3 bootstrap scenario${RESET}`);
   await descendFromCanopy(bot);
@@ -157,15 +200,16 @@ async function run(bot: Bot, actions: Actions): Promise<void> {
   if (!hasTable) {
     record('5. place crafting_table', 'skip', 'no crafting table to place');
   } else {
-    const pos = bot.entity.position;
-    const yaw = bot.entity.yaw;
-    const placed = await actions.placeBlock(
-      'crafting_table',
-      Math.floor(pos.x + Math.round(-Math.sin(yaw))),
-      Math.floor(pos.y),
-      Math.floor(pos.z + Math.round(Math.cos(yaw))),
-    );
-    judge('5. place crafting_table', placed, ['blocked', 'unreachable']);
+    // Pick a spot that is actually placeable rather than assuming the block in
+    // front is free -- in forest it usually is not, and "blocked" would then be
+    // a correct refusal to a badly chosen question rather than a real result.
+    const spot = findPlaceableSpot(bot);
+    if (spot === null) {
+      record('5. place crafting_table', 'skip', 'no empty spot with a solid neighbour nearby');
+    } else {
+      const placed = await actions.placeBlock('crafting_table', spot.x, spot.y, spot.z);
+      judge('5. place crafting_table', placed, ['blocked', 'unreachable']);
+    }
   }
 
   // --- 4. move around ----------------------------------------------------

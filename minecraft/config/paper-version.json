@@ -1,9 +1,9 @@
 {
-  "minecraftVersion": "26.1.2",
-  "paperBuild": 74,
-  "jarName": "paper-26.1.2-74.jar",
-  "sha256": "1d70b1dab9cf4a6de615209a536f3a45a2186240253c428213ce2188ab95e5f7",
-  "javaMinimum": 25,
+  "minecraftVersion": "1.21.8",
+  "paperBuild": 60,
+  "jarName": "paper-1.21.8-60.jar",
+  "sha256": "8de7c52c3b02403503d16fac58003f1efef7dd7a0256786843927fa92ee57f1e",
+  "javaMinimum": 21,
   "verifiedOn": "2026-09-06",
-  "note": "Pinned for reproducibility. Run `npm run minecraft:check-latest` to see whether PaperMC has published a newer build; upgrading is a deliberate edit to this file, never automatic."
+  "note": "Pinned for reproducibility. Chosen over 26.1.2 because mineflayer-pathfinder wedges on 26.1.x in normal terrain and does not on 1.21.8 -- see docs/decisions.md ADR-001 and ADR-008. Paper support for 1.21.8 ended 2025-11-14, so this build receives no further updates; that is a deliberate, documented trade. Run `npm run minecraft:check-latest` to see newer builds; upgrading is a deliberate edit here, never automatic."
 }

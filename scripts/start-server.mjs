@@ -18,6 +18,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import zlib from 'node:zlib';
 
 // Node 26 runs TypeScript natively, so this .mjs infrastructure script can share
 // the application's env reader rather than keeping a second copy in sync.
@@ -89,6 +90,49 @@ if (!(await exists(eula)) || !/^\s*eula\s*=\s*true/im.test(await fs.readFile(eul
     'The Minecraft EULA has not been accepted.',
     'Run `npm run minecraft:setup` and answer the EULA prompt.',
   );
+}
+
+/**
+ * Read the Minecraft version a world was last saved by, from level.dat.
+ *
+ * level.dat is gzipped NBT. Rather than take an NBT dependency for one string,
+ * this scans the decompressed bytes for a version-shaped token -- enough for a
+ * guard, and it fails open: an unreadable world returns null and the server
+ * starts as normal, because a version check must never be the thing that stops
+ * you playing.
+ */
+async function worldVersion(worldDir) {
+  try {
+    const raw = zlib.gunzipSync(await fs.readFile(path.join(worldDir, 'level.dat'))).toString('latin1');
+    const matches = [...raw.matchAll(/(?:1\.\d{1,2}(?:\.\d{1,2})?|\d{2}\.\d{1,2}(?:\.\d{1,2})?)/g)].map((m) => m[0]);
+    return matches.length > 0 ? matches[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+// Minecraft upgrades worlds silently and never downgrades them. Opening a
+// newer world with an older server corrupts it, and the damage is not obvious
+// until much later -- exactly the kind of loss that would invalidate an
+// experiment. Refuse rather than risk it.
+const worldName = env.LEVEL_NAME ?? 'civ-sim-world';
+const worldDir = path.join(SERVER_DIR, worldName);
+
+if (await exists(worldDir)) {
+  const existing = await worldVersion(worldDir);
+  if (existing !== null && existing !== pin.minecraftVersion) {
+    fail(
+      `World "${worldName}" was created by Minecraft ${existing}, but the server is pinned to ${pin.minecraftVersion}.`,
+      '',
+      'Minecraft never downgrades a world; opening this one would corrupt it.',
+      'Move it aside and let the server generate a fresh world:',
+      '',
+      `    mv minecraft/server/${worldName} minecraft/server/${worldName}.${existing}-archived`,
+      '',
+      'Or change minecraftVersion in minecraft/config/paper-version.json back',
+      `to ${existing}.`,
+    );
+  }
 }
 
 const xms = env.SERVER_MEMORY_MIN ?? '2G';

@@ -4,15 +4,15 @@
  *
  *     npm run bot:probe          (the Paper server must be running)
  *
- * Mineflayer's newest tested version is 26.1; our server runs 26.1.2. They share
- * protocol 775, so the bot logs in cleanly either way -- which is exactly the
- * problem. A successful login proves the handshake, not the data.
+ * A bot can log in cleanly against a version minecraft-data models only
+ * approximately -- the handshake proves the protocol matched, not that the
+ * block, item and recipe data is right. If the dataset is subtly wrong, every
+ * layer above inherits the error: Stage 3 mines the wrong block, Stage 5
+ * reasons about a world that is not there.
  *
- * `minecraft-data` resolves "26.1.2" to the `pc/26.1` dataset via majorVersion.
- * If 26.1.2 changed the block-state palette, added items, or altered recipes,
- * that dataset is subtly wrong and every layer above it inherits the error --
- * Stage 3 would mine the wrong block, Stage 5 would reason about a world that
- * is not there.
+ * So this probe re-runs on every version change. It is deliberately
+ * version-agnostic: it asks minecraft-data what the configured version should
+ * resolve to, then checks the live server agrees.
  *
  * So this probe checks the data, not the connection. It exits non-zero on
  * failure, and prints enough detail for a human to judge the borderline cases.
@@ -21,6 +21,8 @@
 import mineflayer from 'mineflayer';
 import type { Bot } from 'mineflayer';
 import type { IndexedData } from 'minecraft-data';
+
+import minecraftData from 'minecraft-data';
 
 import { loadConfig } from '../src/config.ts';
 
@@ -85,26 +87,24 @@ const checks: Check[] = [
       const dataVersion = registry.version.dataVersion;
       const majorVersion = registry.version.majorVersion;
 
-      // Mineflayer reports the DATASET version it resolved to, not the string we
-      // passed in -- so bot.version is "26.1" even though we connect to a 26.1.2
-      // server. That is the mapping working, not a mismatch. What matters is
-      // that it landed on the 26.1 dataset rather than something older.
-      const ok = majorVersion === '26.1' && bot.version === '26.1';
+      // Mineflayer reports the DATASET version it resolved to, not the string
+      // we passed in: connect to 26.1.2 and bot.version reads "26.1"; connect
+      // to 1.21.8 and it reads "1.21.8". That mapping is minecraft-data doing
+      // its job, so rather than hardcode either answer, ask minecraft-data what
+      // the configured version SHOULD resolve to and check it agrees.
+      const expected = minecraftData(config.version);
+      const expectedMajor = expected === null ? null : expected.version.majorVersion;
+
+      const ok = expectedMajor !== null && majorVersion === expectedMajor;
       return {
         ok,
         detail: ok
           ? `requested ${config.version} -> dataset ${majorVersion} (dataVersion ${dataVersion})`
-          : `expected the 26.1 dataset, got bot.version=${bot.version} major=${majorVersion}`,
+          : `expected ${config.version} to resolve to ${expectedMajor ?? '(no dataset)'}, got ${majorVersion}`,
         notes: [
           `server brand: ${bot.game.serverBrand}`,
           `dimension:    ${bot.game.dimension}`,
-          `dataVersion ${dataVersion} ${
-            dataVersion === 4790
-              ? '= 26.1.2 exactly'
-              : dataVersion === 4786
-                ? '= plain 26.1 (feature gating uses 26.1, not 26.1.2)'
-                : '(unexpected)'
-          }`,
+          `bot.version:  ${bot.version}`,
         ],
       };
     },
@@ -252,7 +252,7 @@ const checks: Check[] = [
           loaded === 0
             ? 'no chunks loaded -- cannot judge the palette'
             : ok
-              ? `all ${loaded} decoded blocks consistent with the 26.1 palette`
+              ? `all ${loaded} decoded blocks consistent with the ${registry.version.majorVersion} palette`
               : `unnamed=${unnamed} unknown=${unknownName} stateOutOfRange=${stateOutOfRange}`,
         notes,
       };
@@ -387,15 +387,18 @@ bot.once('spawn', () => {
     if (failures === 0) {
       console.log(`  ${GREEN}${BOLD}All ${checks.length} checks passed.${RESET}`);
       console.log(
-        `  ${DIM}minecraft-data's 26.1 dataset is consistent with this 26.1.2 server.${RESET}`,
+        `  ${DIM}minecraft-data is consistent with this ${config.version} server.${RESET}`,
       );
     } else {
       console.log(`  ${RED}${BOLD}${failures} of ${checks.length} checks failed.${RESET}`);
       console.log(
-        `  ${YELLOW}ADR-001 fallback: set minecraftVersion to "26.1" in${RESET}`,
+        `  ${YELLOW}minecraft-data does not model this server correctly. Pick a version${RESET}`,
       );
       console.log(
-        `  ${YELLOW}minecraft/config/paper-version.json, re-run setup, regenerate the world.${RESET}`,
+        `  ${YELLOW}in minecraft/config/paper-version.json that mineflayer tests against,${RESET}`,
+      );
+      console.log(
+        `  ${YELLOW}re-run setup, and regenerate the world. See ADR-001.${RESET}`,
       );
     }
     console.log('');
