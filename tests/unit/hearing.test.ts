@@ -143,3 +143,35 @@ describe('observation integration', () => {
     assert.match(observation, /follow me/);
   });
 });
+
+describe('placeable spots', () => {
+  test('never offers the space the bot occupies', async () => {
+    const { observePlaceableSpots } = await import('../../src/bot/observations.ts');
+
+    // A player is ~1.8 blocks tall, so it fills (0,0,0) AND (0,1,0). Only the
+    // first was excluded, so the head block was offered -- and being at
+    // horizontal distance zero it sorted FIRST, meaning the agent was told
+    // every single turn that it could build inside its own head. It tried,
+    // the server silently refused, and place_block ran at 15%.
+    const origin = new Vec3(10, 64, 20);
+
+    const bot = {
+      entity: { position: origin },
+      // Ground below y=64, air above.
+      blockAt: (v: Vec3) =>
+        v.y < 64
+          ? { name: 'grass_block', boundingBox: 'block', position: v }
+          : { name: 'air', boundingBox: 'empty', position: v },
+    } as unknown as Parameters<typeof observePlaceableSpots>[0];
+
+    const spots = observePlaceableSpots(bot, 12);
+
+    const feet = `${origin.x},${origin.y},${origin.z}`;
+    const head = `${origin.x},${origin.y + 1},${origin.z}`;
+    const offered = spots.map((s) => `${s.position.x},${s.position.y},${s.position.z}`);
+
+    assert.ok(!offered.includes(feet), 'must not offer the block the bot stands in');
+    assert.ok(!offered.includes(head), 'must not offer the block the bot’s head is in');
+    assert.ok(spots.length > 0, 'should still find somewhere valid to build');
+  });
+});

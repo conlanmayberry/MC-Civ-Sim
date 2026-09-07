@@ -289,7 +289,16 @@ export function observePlaceableSpots(bot: Bot, limit = 4): PlaceableSpot[] {
   for (const dy of [0, -1, 1]) {
     for (let dx = -2; dx <= 2; dx++) {
       for (let dz = -2; dz <= 2; dz++) {
-        if (dx === 0 && dz === 0 && dy === 0) continue;
+        // Skip the bot's OWN space -- both blocks of it. A player is roughly
+        // 1.8 blocks tall, so it occupies (0,0,0) and (0,1,0), and neither can
+        // be built in.
+        //
+        // Only (0,0,0) was excluded before, so (0,1,0) -- the head -- was
+        // offered as placeable and, having a horizontal distance of zero,
+        // sorted FIRST. The agent was told every turn that it could build
+        // inside its own head, tried it, and the server silently refused. That
+        // is a large share of why place_block ran at 15%.
+        if (dx === 0 && dz === 0 && (dy === 0 || dy === 1)) continue;
         offsets.push([dx, dy, dz]);
       }
     }

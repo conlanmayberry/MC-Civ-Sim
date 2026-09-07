@@ -142,10 +142,24 @@ export function buildObservation(
 
   // Surface the pressures worth reacting to, without prescribing a reaction.
   const pressures: string[] = [];
-  if (self.food <= 6) pressures.push('You are very hungry.');
+
+  if (self.food <= 12) {
+    // Saying "you are hungry" while it carries nothing edible produced twelve
+    // consecutive eat_food attempts against an empty inventory. Being hungry
+    // with no food is a different situation from being hungry, and the agent
+    // could not tell them apart from the inventory list alone.
+    const hasFood = inventory.items.some((i) => bot.registry.foodsByName[i.name] !== undefined);
+    pressures.push(
+      self.food <= 6 ? 'You are very hungry.' : 'You are getting hungry.',
+      hasFood ? '' : 'You have nothing edible -- eating is not an option until you find food.',
+    );
+  }
+
   if (self.health <= 10) pressures.push('You are hurt.');
   if (!self.isDay) pressures.push('It is dark; hostile mobs spawn at night.');
-  if (pressures.length > 0) lines.push(pressures.join(' '));
+
+  const text = pressures.filter((p) => p !== '').join(' ');
+  if (text !== '') lines.push(text);
 
   return lines.join('\n');
 }

@@ -19,7 +19,15 @@ import { ActionFailure } from './run.ts';
 import type { ActionResult } from './types.ts';
 import { toPosition } from './types.ts';
 
-export const DEFAULT_PLACE_TIMEOUT_MS = 20_000;
+/**
+ * Just above mineflayer's own 5s placement ack window.
+ *
+ * It was 20s, and 85 of 131 placements burned the whole budget before failing.
+ * A placement either lands within a few seconds or it is not going to, and a
+ * fast failure is worth far more to the agent than a slow one: it gets the
+ * feedback while the situation is still the one it decided about.
+ */
+export const DEFAULT_PLACE_TIMEOUT_MS = 9_000;
 export const DEFAULT_EAT_TIMEOUT_MS = 15_000;
 
 /** The six neighbours of a block, with the face vector pointing back at it. */
@@ -94,6 +102,18 @@ export function createSurviveActions(ctx: ActionContext) {
             throw new ActionFailure('blocked', `${existing.name} already occupies that position`);
           }
 
+          // You cannot place a block where you are standing, and the server
+          // silently refuses rather than saying so -- which showed up as a
+          // timeout. It comes up constantly when an agent walls itself in, so
+          // the message says what to do about it.
+          const feet = bot.entity.position.floored();
+          if (target.equals(feet) || target.equals(feet.offset(0, 1, 0))) {
+            throw new ActionFailure(
+              'blocked',
+              'you are standing there -- move aside before placing a block in your own space',
+            );
+          }
+
           // A block is placed against a neighbour's face, not into thin air.
           const anchor = FACES.map((f) => ({
             block: bot.blockAt(target.plus(f.offset)),
@@ -115,14 +135,37 @@ export function createSurviveActions(ctx: ActionContext) {
           }
 
           await bot.equip(item, 'hand');
-          await bot.placeBlock(anchor.block, anchor.face);
+
+          // Face the spot before placing. mineflayer looks at it internally,
+          // but doing it forcibly first settles the rotation in one tick
+          // instead of animating over several while the placement is sent.
+          try {
+            await bot.lookAt(target.offset(0.5, 0.5, 0.5), true);
+          } catch {
+            /* not fatal; the placement may still be accepted */
+          }
+
+          let placeError: string | null = null;
+          try {
+            await bot.placeBlock(anchor.block, anchor.face);
+          } catch (err) {
+            // Not necessarily a failure. mineflayer throws when it does not see
+            // the acknowledging block update, which also happens when the ack
+            // is merely lost or arrives out of order -- so the world decides,
+            // not the exception.
+            placeError = err instanceof Error ? err.message : String(err);
+          }
+
           await sleep(250);
 
-          // Verify rather than trust: placeBlock can resolve without the server
-          // having accepted the placement.
           const placed = bot.blockAt(target);
           if (placed === null || placed.boundingBox === 'empty') {
-            throw new ActionFailure('failed', 'the server did not accept the placement');
+            throw new ActionFailure(
+              'failed',
+              placeError === null
+                ? 'the server did not accept the placement'
+                : `placement rejected: ${placeError}`,
+            );
           }
 
           return {
