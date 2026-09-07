@@ -40,8 +40,14 @@ import { round2, toPosition } from './types.ts';
  */
 const APPROACH_RANGE = 2;
 const DEFAULT_SEARCH_RADIUS = 32;
-/** How many candidate blocks to consider before giving up on a target. */
-const CANDIDATES = 12;
+/**
+ * How many candidate blocks to try before giving up.
+ *
+ * Twelve, each with its own pathfinding attempt and wedge retries, is how the
+ * 90s budget disappeared. Four is enough to get past "the nearest one is
+ * through a wall" without spending the whole turn proving a spot is bad.
+ */
+const CANDIDATES = 4;
 /** Drops take a moment to spawn before they can be collected. */
 const DROP_SETTLE_MS = 350;
 /** Let residual movement bleed off before swinging, so the dig is not aborted. */
@@ -49,16 +55,47 @@ const DIG_SETTLE_MS = 250;
 /** Stop sweeping after this many drops, so one action cannot run away. */
 const MAX_DROPS_PER_SWEEP = 12;
 
-export const DEFAULT_MINE_TIMEOUT_MS = 90_000;
+/**
+ * Was 90s, and eight attempts burned every second of it before giving up.
+ *
+ * A mine that has not started after this long is stuck on approach, and the
+ * agent is better served by a quick failure it can act on than by a minute and
+ * a half of silence -- especially now that it batches several actions into one
+ * decision, where a single stuck call consumes the whole turn.
+ */
+export const DEFAULT_MINE_TIMEOUT_MS = 45_000;
 export const DEFAULT_COLLECT_TIMEOUT_MS = 30_000;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-function inventoryCount(bot: Bot, name: string): number {
-  return bot.inventory
-    .items()
-    .filter((i) => i.name === name)
-    .reduce((sum, i) => sum + i.count, 0);
+/**
+ * A snapshot of every stack, for diffing.
+ *
+ * Counting the BLOCK's name was wrong and quietly damaging: mining stone with
+ * a pickaxe yields cobblestone, coal_ore yields coal, grass_block yields dirt.
+ * A successful mine therefore reported gained=0, which tells an agent that the
+ * block is unobtainable -- exactly the false lesson the no_tool check exists to
+ * prevent, arriving by another route.
+ */
+function inventorySnapshot(bot: Bot): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const item of bot.inventory.items()) {
+    counts.set(item.name, (counts.get(item.name) ?? 0) + item.count);
+  }
+  return counts;
+}
+
+/** What actually appeared in the inventory between two snapshots. */
+function inventoryGained(
+  before: Map<string, number>,
+  after: Map<string, number>,
+): Record<string, number> {
+  const gained: Record<string, number> = {};
+  for (const [name, count] of after) {
+    const delta = count - (before.get(name) ?? 0);
+    if (delta > 0) gained[name] = delta;
+  }
+  return gained;
 }
 
 function totalItems(bot: Bot): number {
@@ -165,7 +202,7 @@ export function createGatherActions(ctx: ActionContext) {
             throw new ActionFailure('invalid_argument', `no such block: ${blockName}`);
           }
 
-          const before = inventoryCount(bot, blockName);
+          const before = inventorySnapshot(bot);
           const positions: Array<Record<string, number>> = [];
           const deadline = Date.now() + timeoutMs - 3_000;
 
@@ -268,12 +305,20 @@ export function createGatherActions(ctx: ActionContext) {
 
           const sweep = await sweepDrops(6, Math.min(8_000, Math.max(2_000, deadline - Date.now())), signal);
 
+          // Report what was actually collected, by item name. The model needs
+          // to know it got cobblestone rather than stone -- otherwise it looks
+          // for "stone" in its inventory, fails to find it, and concludes the
+          // mining did not work.
+          const gained = inventoryGained(before, inventorySnapshot(bot));
+          const totalGained = Object.values(gained).reduce((a, b) => a + b, 0);
+
           return {
             block: blockName,
             requested: count,
             mined: positions.length,
             positions,
-            gained: inventoryCount(bot, blockName) - before,
+            gained,
+            totalGained,
             dropsVisited: sweep['dropsVisited'],
           };
         },
