@@ -89,9 +89,24 @@ export interface Store {
   endRun: (runId: string, at: string) => void;
   flush: () => void;
   close: () => void;
+  /** Everywhere this agent has recorded, oldest first. */
+  loadPlaces: (agentId: string) => PlaceRow[];
+  /** Record a place, replacing any earlier one of the same name. */
+  savePlace: (agentId: string, place: PlaceRow) => void;
   /** Escape hatch for the query CLI; do not use for writes. */
   raw: () => DatabaseSync;
   pendingCount: () => number;
+}
+
+/** One remembered location. Mirrors the `places` table. */
+export interface PlaceRow {
+  name: string;
+  x: number;
+  y: number;
+  z: number;
+  dimension: string;
+  note: string;
+  updatedAt: string;
 }
 
 export function openStore(dbPath: string, options: StoreOptions = {}): Store {
@@ -151,6 +166,22 @@ export function openStore(dbPath: string, options: StoreOptions = {}): Store {
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
+  const selectPlaces: StatementSync = db.prepare(
+    `SELECT name, x, y, z, dimension, note, updated_at
+     FROM places WHERE agent_id = ? ORDER BY updated_at`,
+  );
+
+  // ON CONFLICT rather than DELETE + INSERT so created_at survives: when a
+  // place was first found is worth keeping even when it is re-recorded.
+  const upsertPlace: StatementSync = db.prepare(
+    `INSERT INTO places (agent_id, name, x, y, z, dimension, note, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (agent_id, name) DO UPDATE SET
+       x = excluded.x, y = excluded.y, z = excluded.z,
+       dimension = excluded.dimension, note = excluded.note,
+       updated_at = excluded.updated_at`,
+  );
+
   const pending: EventRow[] = [];
   let closed = false;
 
@@ -199,6 +230,36 @@ export function openStore(dbPath: string, options: StoreOptions = {}): Store {
       if (closed) return;
       pending.push(row);
       if (pending.length >= batchSize) flush();
+    },
+
+    loadPlaces(agentId) {
+      const rows = selectPlaces.all(agentId) as Array<Record<string, unknown>>;
+      return rows.map((row) => ({
+        name: String(row['name']),
+        x: Number(row['x']),
+        y: Number(row['y']),
+        z: Number(row['z']),
+        dimension: String(row['dimension']),
+        note: String(row['note'] ?? ''),
+        updatedAt: String(row['updated_at']),
+      }));
+    },
+
+    savePlace(agentId, place) {
+      if (closed) return;
+      // Written straight through, not batched: a place the agent has just
+      // named is the one thing it must not lose to a crash.
+      upsertPlace.run(
+        agentId,
+        place.name,
+        place.x,
+        place.y,
+        place.z,
+        place.dimension,
+        place.note,
+        place.updatedAt,
+        place.updatedAt,
+      );
     },
 
     writeSnapshot(row) {

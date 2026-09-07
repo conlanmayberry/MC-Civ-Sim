@@ -583,3 +583,77 @@ rejection during a paid run.
 against the live Minecraft server with it. That is not a lesser mode — it is how
 the loop is verified before an API key is ever used, and it is why the agent
 loop is testable in CI at all.
+
+---
+
+## ADR-011 — Agents remember places, and Mindcraft is a reference rather than a dependency
+
+**Date:** 2026-09-07 (Stage 5)
+**Status:** accepted
+
+Agents can record named locations. Places belong to one agent, persist in the
+telemetry database across restarts, and are shown in every observation with
+their distance and direction.
+
+### The failure this answers
+
+Traced from one run. Alice built a shelter at `1419,71,-170`, drifted twenty
+blocks over five turns, and went on placing torches "at the shelter's edge"
+from wherever she was standing — eventually reporting she was finishing *our*
+shelter from two hundred blocks away.
+
+She was not confused about what a shelter is. Nothing in the system had ever
+recorded where hers was. An observation says where an agent is **now**
+([ADR-005](#adr-005--observations-are-pure-serialisable-and-bounded)) and
+history is six turns of prose, so a phrase like "our shelter" had no
+coordinates behind it and silently re-anchored to her own position.
+
+That is a memory defect, not a knowledge defect, which is why loading a
+Minecraft wiki or a note vault would not have touched it. No external corpus
+knows where *her* shelter is.
+
+### Design
+
+A name, a position, a dimension, a short note — deliberately the smallest thing
+that fixes it. [src/agent/places.ts](../src/agent/places.ts).
+
+- **Explicit, via a `remember_place` tool**, plus one automatic case: where the
+  agent died. Automatically inferring "this cluster of placed blocks is a
+  shelter" was considered and rejected — it guesses at intent, and an agent that
+  cannot say what it built has not really recorded anything.
+- **Bounded at 12.** Every place is in every prompt from then on. The
+  least-recently-recorded is dropped, on the reasoning that a place still worth
+  keeping gets re-recorded when it is visited again.
+- **Rendered with distance and direction**, not just coordinates. "shelter —
+  1419,71,-170, 217m northeast" tells an agent that whatever it is standing in,
+  it is not the shelter. A bare coordinate does not.
+- **Never shared between agents.** Keyed by `agent_id`, never joined across
+  agents. One agent learning where another's shelter is has to happen by being
+  told, in chat — which is the exact channel Stage 9 studies. Sharing the table
+  would quietly turn a misinformation experiment into a database read.
+- **Additive schema.** `SCHEMA_VERSION` stays 1: the `places` table is appended
+  with `CREATE TABLE IF NOT EXISTS`, so an existing database keeps opening, as
+  [schema.ts](../src/telemetry/schema.ts) always intended.
+
+### Why not adopt Mindcraft
+
+[Mindcraft](https://github.com/mindcraft-bots/mindcraft) is the closest existing
+project — LLM agents on Mineflayer — and its `MemoryBank` is twenty lines doing
+exactly this, which is good evidence the small version is enough. It stays a
+reference and not a dependency:
+
+- It is a **whole agent runtime**, not a library: its own loop, mindserver,
+  express, socket.io, prismarine-viewer, canvas/WebGL, thirty-odd dependencies.
+  Adopting it means replacing this stack, and with it the telemetry, the action
+  contract ([ADR-007](#adr-007--every-action-returns-a-typed-result-and-never-throws))
+  and the closed tool surface.
+- It pins `mineflayer-pathfinder ^2.4.5` — the stale npm release whose wedging
+  on 1.21 is why this project tracks git master.
+- Code generation and execution (`allow_insecure_coding`) is central to that
+  family of designs, including Voyager's skill library. Principle 16 excludes it
+  here on purpose.
+- Different aim. Mindcraft is about capable bots; this is an instrument for
+  observing behaviour, so a scientific record is the deliverable rather than a
+  means.
+
+The idea worth borrowing is theirs, and it is borrowed. The runtime is not.

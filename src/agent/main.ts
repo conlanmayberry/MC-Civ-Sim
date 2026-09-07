@@ -40,6 +40,7 @@ import { createAgent } from './agent.ts';
 import { loadIdentityById } from './identity.ts';
 import { createInbox } from './inbox.ts';
 import { createHearing } from './hearing.ts';
+import { createPlaces } from './places.ts';
 import { DEFAULT_CONTROL_PORT, startControlServer } from './control.ts';
 import type { ControlServer } from './control.ts';
 
@@ -169,12 +170,20 @@ function shutdown(reason: string): void {
   session?.stop(reason);
 }
 
+// Backed by the telemetry database so an agent still knows where its shelter
+// is after a restart -- which is the entire point of writing places down.
+const places = createPlaces(identity.id, {
+  load: (agentId) => telemetry.store.loadPlaces(agentId),
+  upsert: (agentId, place) => telemetry.store.savePlace(agentId, place),
+});
+
 const agent = createAgent({
   identity,
   provider,
   budget,
   inbox,
   hearing,
+  places,
   log,
   intervalMs,
   onStopped: (reason) => {

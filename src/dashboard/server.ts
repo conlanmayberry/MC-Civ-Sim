@@ -264,6 +264,30 @@ async function handleApi(
     return true;
   }
 
+  /**
+   * What the agent has written down about where things are.
+   *
+   * Read from the database rather than from the live agent so a finished run
+   * can still be inspected -- and because this is the thing you most want to
+   * see next to the map: a shelter marked at 1419,-170 with the agent two
+   * hundred blocks away explains a great deal at a glance.
+   */
+  if (route === '/places') {
+    const agentId = url.searchParams.get('agent');
+    json(
+      res,
+      200,
+      query(
+        `SELECT name, x, y, z, dimension, note, updated_at AS updatedAt
+         FROM places
+         ${agentId === null ? '' : 'WHERE agent_id = ?'}
+         ORDER BY updated_at DESC LIMIT 24`,
+        agentId === null ? [] : [agentId],
+      ),
+    );
+    return true;
+  }
+
   if (route === '/marks') {
     const agentId = url.searchParams.get('agent');
     json(

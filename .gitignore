@@ -43,3 +43,7 @@ Thumbs.db
 
 # Kill-switch sentinel, created to stop a running agent
 STOP
+
+# Mindcraft, kept beside the project as a reference implementation only.
+# See ADR-011: we borrow the idea of a place memory, not the runtime.
+mindcraft-develop/

@@ -15,7 +15,7 @@
 
 import type { Bot } from 'mineflayer';
 
-import type { Actions } from '../bot/actions/index.ts';
+import type { ActionResult, Actions } from '../bot/actions/index.ts';
 import type { Logger } from '../util/log.ts';
 import type { Budget } from '../ai/budget.ts';
 import { backoffMs, classifyProviderError } from '../ai/errors.ts';
@@ -27,6 +27,7 @@ import { TOOL_SCHEMAS, invokeTool } from '../ai/tools.ts';
 import type { AgentIdentity } from './identity.ts';
 import type { Inbox } from './inbox.ts';
 import type { Hearing } from './hearing.ts';
+import type { Places } from './places.ts';
 import { createWaker } from './waker.ts';
 
 export interface AgentOptions {
@@ -35,6 +36,7 @@ export interface AgentOptions {
   budget: Budget;
   inbox: Inbox;
   hearing: Hearing;
+  places: Places;
   log: Logger;
   /** Normal thinking interval. */
   intervalMs: number;
@@ -99,8 +101,57 @@ export function orderCalls<T extends { name: string }>(calls: readonly T[]): T[]
   );
 }
 
+/**
+ * Record a place and report it the way every other tool reports itself.
+ *
+ * Coordinates are optional because the common case is "here", and asking a
+ * model to restate coordinates it was just shown is an invitation to transcribe
+ * them wrongly.
+ */
+function rememberPlaceWith(
+  places: Places,
+  log: Logger,
+  bot: Bot,
+  name: string,
+  note: string,
+  at: { x: number; y: number; z: number } | null,
+  cycle: number,
+): ActionResult {
+  const position = at ?? bot.entity?.position ?? null;
+  if (position === null) {
+    return {
+      ok: false,
+      action: 'remember_place',
+      durationMs: 0,
+      detail: { name },
+      error: { code: 'failed', message: 'cannot tell where you are right now' },
+    };
+  }
+
+  const place = places.remember({
+    name,
+    note,
+    x: position.x,
+    y: position.y,
+    z: position.z,
+    dimension: bot.game?.dimension ?? 'overworld',
+  });
+
+  log.event('place_remembered', {
+    name: place.name,
+    note: place.note,
+    x: place.x,
+    y: place.y,
+    z: place.z,
+    dimension: place.dimension,
+    cycle,
+  });
+
+  return { ok: true, action: 'remember_place', durationMs: 0, detail: { ...place } };
+}
+
 export function createAgent(options: AgentOptions): Agent {
-  const { identity, provider, budget, inbox, hearing, log } = options;
+  const { identity, provider, budget, inbox, hearing, places, log } = options;
 
   const system = buildSystemPrompt(identity);
   let history: string[] = [];
@@ -114,6 +165,14 @@ export function createAgent(options: AgentOptions): Agent {
   function nudge(reason: string, urgent = false): void {
     waker.nudge(reason, urgent);
   }
+
+  const rememberPlace = (
+    bot: Bot,
+    name: string,
+    note: string,
+    at: { x: number; y: number; z: number } | null,
+    cycle: number,
+  ): ActionResult => rememberPlaceWith(places, log, bot, name, note, at, cycle);
 
   async function runOneCycle(bot: Bot, actions: Actions): Promise<void> {
     cycle++;
@@ -137,7 +196,7 @@ export function createAgent(options: AgentOptions): Agent {
     // takeNew, not recent: each message is presented once as fresh. The
     // window in `recent` still gives continuity through history.
     const heard = hearing.takeNew();
-    const observation = buildObservation(bot, cycle, heard, goal);
+    const observation = buildObservation(bot, cycle, heard, goal, places.all());
 
     // Timed because thinking is dead air: the agent stands still for it, and
     // without a number there is no way to tell a slow model from a slow loop.
@@ -227,6 +286,7 @@ export function createAgent(options: AgentOptions): Agent {
           log.event('goal_set', { goal: next, cycle });
           return true;
         },
+        (name, note, at) => rememberPlace(bot, name, note, at, cycle),
       );
       results.push(describeForModel(call.name, result));
 
@@ -274,7 +334,13 @@ export function createAgent(options: AgentOptions): Agent {
         if (bot.food <= LOW_FOOD) nudge('hungry');
         else if (bot.health <= LOW_HEALTH) nudge('hurt');
       });
-      bot.on('death', () => nudge('died'));
+      bot.on('death', () => {
+        // Recorded before the nudge, while the position is still the one it
+        // died at. Where you died is the single most useful thing to know
+        // afterwards -- your things are there, and so is whatever killed you.
+        rememberPlace(bot, 'where i died', 'my things dropped here', null, cycle);
+        nudge('died');
+      });
       // Chat arrives via hear(), called from the single onChat handler in
       // main.ts. Registering another bot.on('chat') here would double-log every
       // message, since connection.ts already records chat_received.

@@ -29,6 +29,8 @@ import type { AgentIdentity } from '../agent/identity.ts';
 import { toPromptFragment } from '../agent/identity.ts';
 import type { HeardMessage } from '../agent/hearing.ts';
 import { describeHearing } from '../agent/hearing.ts';
+import type { Place } from '../agent/places.ts';
+import { describePlaces } from '../agent/places.ts';
 
 /** How many past cycles the model is reminded of. */
 export const HISTORY_WINDOW = 6;
@@ -64,6 +66,11 @@ export function buildSystemPrompt(identity: AgentIdentity): string {
     'It is shown back to you every turn, so setting the goal you already have',
     'does nothing and spends a turn you could have spent acting.',
     '',
+    'You are told where you are, never where you have been. If you walk away',
+    'from something without recording it, you have lost it: use remember_place',
+    'for anything you will want to find again, and read the places you have',
+    'recorded before deciding you are somewhere you are not.',
+    '',
     'Actions can fail, and a failure tells you something true about the world.',
     'unreachable means no route; no_tool means you need a better tool first;',
     'insufficient_items means you lack materials. Repeating a failed action',
@@ -85,6 +92,7 @@ export function buildObservation(
   cycle: number,
   heard: HeardMessage[] = [],
   goal: string | null = null,
+  places: readonly Place[] = [],
 ): string {
   const self = observeSelf(bot);
   const inventory = observeInventory(bot);
@@ -137,6 +145,11 @@ export function buildObservation(
         .join(' or ')}.`,
     );
   }
+
+  // Where it has been. An agent that has walked away from its shelter has no
+  // other way to know that -- which is how one came to build a second shelter
+  // two hundred blocks from the first while reporting it was finishing ours.
+  lines.push(...describePlaces(places, self.position, self.dimension));
 
   // What was said to it. Without this an agent is woken by chat but cannot
   // hear a word of it, which is how it was until this was added.

@@ -53,6 +53,7 @@ const state = {
   map: null,
   trail: [],
   marks: [],
+  places: [],
   seenChat: new Set(),
   failures: 0,
 };
@@ -204,6 +205,7 @@ function select(agentId, port) {
   state.port = port === null || port === '' ? null : Number(port);
   state.trail = [];
   state.marks = [];
+  state.places = [];
   state.map = null;
   state.seenChat.clear();
   ui.talkLog.innerHTML = '';
@@ -470,6 +472,39 @@ function renderMap() {
     }
   }
 
+  // Places the agent has written down. Always drawn: there are at most a
+  // dozen, and they are the only things on this map that the agent chose to
+  // remember rather than merely happened to touch.
+  for (const place of state.places) {
+    const [px, pz] = toPx(place.x, place.z);
+    if (px < 0 || pz < 0 || px > size || pz > size) continue;
+
+    const r = Math.max(4, cell * 0.42);
+    ctx.save();
+    ctx.translate(px, pz);
+
+    ctx.fillStyle = '#7fc7a4';
+    ctx.strokeStyle = '#14171a';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, -r);
+    ctx.lineTo(r, 0);
+    ctx.lineTo(0, r);
+    ctx.lineTo(-r, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#14171acc';
+    ctx.strokeText(place.name, 0, -r - 4);
+    ctx.fillStyle = '#e8e6dc';
+    ctx.fillText(place.name, 0, -r - 4);
+    ctx.restore();
+  }
+
   // The agent, with a facing wedge
   const [cx, cz] = toPx(map.centre.x, map.centre.z);
   const yaw = state.live?.self?.yaw ?? 0;
@@ -508,6 +543,7 @@ function renderLegend() {
     ['mined', '#8fb7d6'],
     ['placed', '#d8a531'],
     ['died', '#c4553d'],
+    ['place', '#7fc7a4'],
   ];
   ui.legend.innerHTML = shown
     .map(([name, colour]) => `<span><i style="background:${colour}"></i>${name}</span>`)
@@ -553,11 +589,12 @@ async function refreshHistory() {
   if (state.selected === null) return;
   const q = `agent=${encodeURIComponent(state.selected)}`;
   try {
-    const [decisions, actions, trail, marks, chat] = await Promise.all([
+    const [decisions, actions, trail, marks, places, chat] = await Promise.all([
       getJson(`/api/decisions?${q}&limit=30`),
       getJson(`/api/actions?${q}`),
       getJson(`/api/trail?${q}`),
       getJson(`/api/marks?${q}`),
+      getJson(`/api/places?${q}`),
       getJson(`/api/chat?${q}&limit=40`),
     ]);
     renderDecisions(decisions);
@@ -566,6 +603,7 @@ async function refreshHistory() {
     // Newest-first from SQL; the map wants oldest-first to draw a path.
     state.trail = trail.slice().reverse();
     state.marks = marks;
+    state.places = places;
   } catch {
     /* transient; the next poll will retry */
   }

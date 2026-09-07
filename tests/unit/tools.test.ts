@@ -73,6 +73,9 @@ describe('tool schemas', () => {
       'mine_block',
       'move_to',
       'place_block',
+      // Records a name and a coordinate the agent already had. It reads
+      // nothing and reaches nothing outside the process.
+      'remember_place',
       'send_chat',
       // set_goal only stores a string the agent shows itself next turn. It
       // touches nothing outside the process.
@@ -194,6 +197,36 @@ describe('tool dispatch', () => {
   test('a goal that did change carries no such note', async () => {
     const result = await invokeTool(stubActions([]), () => {}, 'set_goal', { goal: 'find food' }, () => true);
     assert.equal(result.detail['unchanged'], undefined);
+  });
+
+  test('remember_place with no coordinates means "here"', async () => {
+    let got: unknown = 'not called';
+    await invokeTool(
+      stubActions([]),
+      () => {},
+      'remember_place',
+      { name: 'shelter', note: null, x: null, y: null, z: null },
+      () => true,
+      (name, note, at) => {
+        got = { name, note, at };
+        return { ok: true, action: 'remember_place', durationMs: 0, detail: {} };
+      },
+    );
+    assert.deepEqual(got, { name: 'shelter', note: '', at: null });
+  });
+
+  test('two coordinates out of three is refused rather than guessed', async () => {
+    // Filling the third from the agent's own position would record a place
+    // that is neither where it meant nor where it stands.
+    const result = await invokeTool(stubActions([]), () => {}, 'remember_place', {
+      name: 'cave',
+      note: null,
+      x: 100,
+      y: 64,
+      z: null,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.error?.message ?? '', /all three/);
   });
 
   test('send_chat routes to chat rather than to an action', async () => {

@@ -115,6 +115,31 @@ export const SCHEMA: readonly string[] = [
      reason         TEXT
    )`,
 
+  /**
+   * What an agent knows about where things are.
+   *
+   * Keyed by agent rather than by run: the whole value is that a shelter is
+   * still findable after a restart. Never joined across agents -- one agent
+   * learning where another's shelter is has to happen by being told, in chat,
+   * or Stage 9's misinformation study is studying a database.
+   *
+   * Appended rather than versioned: SCHEMA_VERSION stays 1 because every
+   * statement here is safe to re-run and an existing database must keep
+   * opening.
+   */
+  `CREATE TABLE IF NOT EXISTS places (
+     agent_id   TEXT NOT NULL,
+     name       TEXT NOT NULL,
+     x          REAL NOT NULL,
+     y          REAL NOT NULL,
+     z          REAL NOT NULL,
+     dimension  TEXT NOT NULL,
+     note       TEXT NOT NULL DEFAULT '',
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL,
+     PRIMARY KEY (agent_id, name)
+   )`,
+
   // --- indexes ------------------------------------------------------------
   // Chosen for the questions the brief says the system must answer, not
   // speculatively: what did an agent do and when (1), what happened of a given

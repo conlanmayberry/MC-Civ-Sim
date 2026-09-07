@@ -157,6 +157,22 @@ needs more than one:
 | Ctrl-C | you are at the terminal |
 | create a file named `STOP` | neither of the above; also what the dashboard will use |
 
+## What an agent remembers
+
+An observation says where an agent is **now**, never where it has been. Without
+somewhere to write things down, "our shelter" has no coordinates behind it and
+quietly re-anchors to wherever the agent is standing -- which is how one came to
+report it was finishing a shelter from two hundred blocks away.
+
+So agents can record named places: a shelter, a cave mouth, a village, where
+they died. Each one is shown back to them every turn with its distance and
+direction (`shelter -- 1419,71,-170, 217m northeast`), persists across restarts,
+and belongs to that agent alone -- one agent learns where another's shelter is
+by being told, in chat, like anything else.
+
+They appear on the dashboard map as labelled markers. See
+[ADR-011](docs/decisions.md#adr-011--agents-remember-places-and-mindcraft-is-a-reference-rather-than-a-dependency).
+
 ## Talking to an agent
 
 Agents hear what is said near them, know when a message names them, and can

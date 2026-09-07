@@ -143,6 +143,22 @@ export const TOOL_SCHEMAS: readonly ToolSchema[] = [
     }),
   },
   {
+    name: 'remember_place',
+    description:
+      'Write down where something is, by name -- your shelter, a cave mouth, ' +
+      'a village, where you left a chest. Every place you have recorded is ' +
+      'shown to you with its distance every turn. Without this you have no way ' +
+      'to know where anything is once you have walked away from it. Recording ' +
+      'a name you already used moves it.',
+    parameters: object({
+      name: str('A short name you will recognise later, e.g. "shelter", "iron cave".'),
+      note: nullableStr('Why it matters, in a few words.'),
+      x: nullableInt('Leave null to record where you are standing.'),
+      y: nullableInt('Leave null to record where you are standing.'),
+      z: nullableInt('Leave null to record where you are standing.'),
+    }),
+  },
+  {
     name: 'send_chat',
     description:
       'Say something in Minecraft chat. Other players and agents will see it. ' +
@@ -190,6 +206,17 @@ export async function invokeTool(
   name: string,
   args: Record<string, unknown>,
   setGoal: (goal: string) => boolean | void = () => {},
+  rememberPlace: (
+    name: string,
+    note: string,
+    at: { x: number; y: number; z: number } | null,
+  ) => ActionResult = (name) => ({
+    ok: false,
+    action: 'remember_place',
+    durationMs: 0,
+    detail: { name },
+    error: { code: 'failed', message: 'this agent cannot remember places' },
+  }),
 ): Promise<ActionResult> {
   const fail = (message: string): ActionResult => ({
     ok: false,
@@ -270,6 +297,32 @@ export async function invokeTool(
                 note: 'that was already your goal, so this turn did nothing; it is shown to you every turn without being set',
               },
         };
+      }
+
+      case 'remember_place': {
+        const name = reqStr(args['name'], 'name');
+        const note = typeof args['note'] === 'string' ? args['note'].slice(0, 80) : '';
+        // All three coordinates or none. Two out of three is a mistake, and
+        // filling the third from the agent's own position would record a place
+        // that is neither where it meant nor where it stands.
+        const given = ['x', 'y', 'z'].filter(
+          (k) => typeof args[k] === 'number' && Number.isFinite(args[k]),
+        );
+        if (given.length !== 0 && given.length !== 3) {
+          return fail('give all three of x, y and z, or none of them to use where you are');
+        }
+
+        return rememberPlace(
+          name,
+          note,
+          given.length === 3
+            ? {
+                x: reqInt(args['x'], 'x'),
+                y: reqInt(args['y'], 'y'),
+                z: reqInt(args['z'], 'z'),
+              }
+            : null,
+        );
       }
 
       case 'send_chat': {
