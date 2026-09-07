@@ -514,7 +514,7 @@ project's dependency policy better than most of what is already installed.
 
 ### Why Luna, and why the model is pinned in code
 
-| model | $/M in | $/M out | ~$/agent-hour at one decision per 30s |
+| model | $/M in | $/M out | ~$/agent-hour, no caching, one decision per 30s |
 |---|---|---|---|
 | GPT-6 Astra | 10 | 50 | ~3.60 |
 | GPT-5.6 Sol | 4 | 20 | ~1.44 |
@@ -523,6 +523,16 @@ project's dependency policy better than most of what is already installed.
 
 A 45x spread. Three agents for eight hours is ~$1.85 on Luna against ~$35 on
 Sol, and this is a system designed to run for days.
+
+These are the pre-caching numbers the cap was originally budgeted against,
+worst case. Two things move the real figure since: the default interval is now
+15s (half of what this table assumes, so roughly double the decision rate),
+and OpenAI's prompt caching discounts the repeated system prompt and
+observation structure -- measured live at ~1,400 of ~2,200 input tokens per
+decision cached. Net effect, measured from a real run rather than estimated:
+**~$0.06/agent-hour on Luna**, comfortably under the pre-caching estimate
+despite twice the decisions -- gotten via `npm run telemetry sql` summing
+`json_extract(data,'$.costUsd')` over `decision` events for a run.
 
 The model lives in [src/ai/pricing.ts](../src/ai/pricing.ts), not `.env`,
 **because the spend cap depends on knowing its price**. A model set by

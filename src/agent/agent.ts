@@ -2,10 +2,13 @@
  * The agent loop: OBSERVE -> DECIDE -> ACT -> RECORD.
  *
  * Deliberately slow. Minecraft runs at 20 ticks a second; this thinks once
- * every 30 seconds by default, plus when something happens that is worth
+ * every 15 seconds by default, plus when something happens that is worth
  * reacting to. The brief is explicit about this separation, and it is also what
  * makes the economics work -- a decision per tick would be both unaffordable
- * and worse, since most ticks contain no new information.
+ * and worse, since most ticks contain no new information. Measured live at
+ * this cadence with prompt caching in effect, Luna costs about $0.06/agent-hour
+ * -- well under the $5 cap for an afternoon (see ADR-010's pricing table for
+ * the pre-caching estimate that was budgeted against).
  *
  * The loop never runs two decisions at once and never thinks while acting. The
  * action layer's mutex (ADR-007) would refuse the overlap anyway, but waiting
@@ -83,6 +86,18 @@ const MAX_CONSECUTIVE_FAILURES = 5;
 const MAX_TOOL_CALLS = 10;
 /** And a wall-clock ceiling, since a batch of moves can be slow rather than many. */
 const MAX_ACTING_MS = 120_000;
+/**
+ * How long to wait before trying again after a turn that changed nothing at
+ * all -- restated a goal it already had, logged a place it already knew, or
+ * called no tool.
+ *
+ * Short, so a stray no-op does not cost a full interval standing still. Not
+ * zero, so it does not hammer the API back-to-back. Used at most once in a
+ * row (see the run loop): if the very next turn is ALSO a no-op, something
+ * more than a stray restatement is going on, and falling back to the normal
+ * interval is safer than a fast loop with no backstop.
+ */
+const NOOP_RETRY_MS = 4_000;
 
 /**
  * Speech first, whatever order the model listed things in.
@@ -99,6 +114,20 @@ export function orderCalls<T extends { name: string }>(calls: readonly T[]): T[]
   return [...calls].sort(
     (a, b) => Number(b.name === 'send_chat') - Number(a.name === 'send_chat'),
   );
+}
+
+/**
+ * Did an action result count as this turn accomplishing something?
+ *
+ * Only a result explicitly marked `unchanged` fails this -- a restated goal
+ * (set_goal), a place already known at the same spot (remember_place). A
+ * FAILED action still counts as effective: `unreachable`, `no_tool`,
+ * `insufficient_items` are real information the model did not have before,
+ * which is a different situation from a turn that produced nothing at all.
+ * Used to decide whether a turn earned its full interval -- see NOOP_RETRY_MS.
+ */
+export function isEffective(result: ActionResult): boolean {
+  return result.detail?.['unchanged'] !== true;
 }
 
 /**
@@ -128,7 +157,7 @@ function rememberPlaceWith(
     };
   }
 
-  const place = places.remember({
+  const { place, changed } = places.remember({
     name,
     note,
     x: position.x,
@@ -144,10 +173,24 @@ function rememberPlaceWith(
     y: place.y,
     z: place.z,
     dimension: place.dimension,
+    changed,
     cycle,
   });
 
-  return { ok: true, action: 'remember_place', durationMs: 0, detail: { ...place } };
+  return {
+    ok: true,
+    action: 'remember_place',
+    durationMs: 0,
+    detail: changed
+      ? { ...place }
+      : {
+          ...place,
+          // Mirrors set_goal's `unchanged`: this place already pointed here,
+          // so nothing about the world model actually changed this turn.
+          unchanged: true,
+          hint: 'this was already recorded at the same spot, so nothing changed',
+        },
+  };
 }
 
 export function createAgent(options: AgentOptions): Agent {
@@ -174,7 +217,15 @@ export function createAgent(options: AgentOptions): Agent {
     cycle: number,
   ): ActionResult => rememberPlaceWith(places, log, bot, name, note, at, cycle);
 
-  async function runOneCycle(bot: Bot, actions: Actions): Promise<void> {
+  /**
+   * Runs one cycle; returns whether it actually changed anything.
+   *
+   * False covers a decision with no tool calls and a decision whose every call
+   * came back marked `unchanged` (a restated goal, a place already known). The
+   * run loop uses this to decide whether the turn earned its full interval or
+   * should be retried sooner -- see NOOP_RETRY_MS.
+   */
+  async function runOneCycle(bot: Bot, actions: Actions): Promise<boolean> {
     cycle++;
     // Consuming the trigger also clears any interruption: from here on, only
     // news arriving *after* this point -- including during the API call, which
@@ -238,11 +289,13 @@ export function createAgent(options: AgentOptions): Agent {
     if (outcome.toolCalls.length === 0) {
       history.push(`Turn ${cycle}: ${outcome.summary || 'did nothing'} -> no action taken`);
       history = trimHistory(history);
-      return;
+      log.event('observation', { note: 'no-op turn', cycle, reason: 'no tool calls' });
+      return false;
     }
 
     const results: string[] = [];
     const actingDeadline = Date.now() + MAX_ACTING_MS;
+    let effective = false;
 
     const calls = orderCalls(outcome.toolCalls);
 
@@ -290,6 +343,8 @@ export function createAgent(options: AgentOptions): Agent {
       );
       results.push(describeForModel(call.name, result));
 
+      if (isEffective(result)) effective = true;
+
       // A failure is information, not an error: the model sees it next turn and
       // can choose differently. That is the whole point of ADR-007's contract.
       if (!result.ok && result.error?.code === 'interrupted') break;
@@ -301,6 +356,16 @@ export function createAgent(options: AgentOptions): Agent {
 
     history.push(`Turn ${cycle}: ${outcome.summary}\n${results.join('\n')}`);
     history = trimHistory(history);
+
+    if (!effective) {
+      log.event('observation', {
+        note: 'no-op turn',
+        cycle,
+        reason: 'every call changed nothing',
+      });
+    }
+
+    return effective;
   }
 
   return {
@@ -356,6 +421,9 @@ export function createAgent(options: AgentOptions): Agent {
 
       let stopReason = 'unknown';
       let consecutiveFailures = 0;
+      // Tracks one no-op turn at a time -- see NOOP_RETRY_MS for why this is
+      // bounded to a single fast retry rather than however many it takes.
+      let noOpStreak = 0;
 
       for (;;) {
         if (stopping !== null) {
@@ -375,8 +443,14 @@ export function createAgent(options: AgentOptions): Agent {
           continue;
         }
 
+        // Defaults to effective so an error below falls straight through to
+        // the normal interval -- the backoff sleep already governs retries on
+        // a failed cycle, and the no-op path is only for a cycle that ran
+        // cleanly and simply did nothing.
+        let effective = true;
+
         try {
-          await runOneCycle(bot, actions);
+          effective = await runOneCycle(bot, actions);
           consecutiveFailures = 0;
         } catch (err) {
           consecutiveFailures++;
@@ -414,6 +488,15 @@ export function createAgent(options: AgentOptions): Agent {
           stopReason = stopping;
           break;
         }
+
+        if (!effective && noOpStreak === 0) {
+          // First empty turn in a row: try again shortly rather than standing
+          // still for a full interval on it.
+          noOpStreak = 1;
+          await waker.wait(NOOP_RETRY_MS);
+          continue;
+        }
+        noOpStreak = 0;
         await waker.wait(options.intervalMs);
       }
 

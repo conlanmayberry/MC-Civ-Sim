@@ -149,7 +149,8 @@ export const TOOL_SCHEMAS: readonly ToolSchema[] = [
       'a village, where you left a chest. Every place you have recorded is ' +
       'shown to you with its distance every turn. Without this you have no way ' +
       'to know where anything is once you have walked away from it. Recording ' +
-      'a name you already used moves it.',
+      'a name you already used updates it -- but doing that with the same ' +
+      'place again accomplishes nothing, since it is already what you know.',
     parameters: object({
       name: str('A short name you will recognise later, e.g. "shelter", "iron cave".'),
       note: nullableStr('Why it matters, in a few words.'),

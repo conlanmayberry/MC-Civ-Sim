@@ -68,6 +68,43 @@ describe('remembering places', () => {
 
     assert.ok(places.get('shelter') !== null, 'a place just revisited must not be evicted');
   });
+
+  test('a genuinely new place reports as changed', () => {
+    const places = createPlaces('alice');
+    const { changed } = places.remember(somewhere('shelter', 1419, -170));
+    assert.equal(changed, true);
+  });
+
+  test('a moved place reports as changed', () => {
+    const places = createPlaces('alice');
+    places.remember(somewhere('shelter', 1419, -170));
+    const { changed } = places.remember(somewhere('shelter', 1620, -40));
+    assert.equal(changed, true);
+  });
+
+  test('recording the identical place again reports as unchanged', () => {
+    // The turn spent doing this accomplished nothing new -- a caller deciding
+    // whether a cycle was worth its interval needs to be able to tell.
+    const places = createPlaces('alice');
+    places.remember({ ...somewhere('shelter', 1419, -170), note: 'blue bed' });
+    const { changed, place } = places.remember({
+      ...somewhere('shelter', 1419, -170),
+      note: 'blue bed',
+    });
+
+    assert.equal(changed, false);
+    assert.equal(place.x, 1419);
+  });
+
+  test('a different note on the same spot still counts as changed', () => {
+    const places = createPlaces('alice');
+    places.remember({ ...somewhere('shelter', 1419, -170), note: 'blue bed' });
+    const { changed } = places.remember({
+      ...somewhere('shelter', 1419, -170),
+      note: 'doorway now on the east side',
+    });
+    assert.equal(changed, true);
+  });
 });
 
 describe('persistence', () => {

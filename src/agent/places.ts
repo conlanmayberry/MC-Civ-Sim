@@ -40,8 +40,16 @@ export interface PlaceStore {
 }
 
 export interface Places {
-  /** Record a place, replacing any earlier one of the same name. */
-  remember: (place: Omit<Place, 'updatedAt'>) => Place;
+  /**
+   * Record a place, replacing any earlier one of the same name.
+   *
+   * `changed` is false when the name already pointed at this same location and
+   * note -- re-recording it still renews it against eviction (visiting a place
+   * again is evidence it still matters), but nothing about it is new, which
+   * callers use to avoid treating a repeat as a turn that accomplished
+   * something. Mirrors set_goal's `unchanged`.
+   */
+  remember: (place: Omit<Place, 'updatedAt'>) => { place: Place; changed: boolean };
   all: () => Place[];
   get: (name: string) => Place | null;
 }
@@ -85,19 +93,28 @@ export function createPlaces(agentId: string, store?: PlaceStore): Places {
 
   return {
     remember(input) {
-      const place: Place = {
-        ...input,
-        name: normaliseName(input.name),
-        x: Math.round(input.x),
-        y: Math.round(input.y),
-        z: Math.round(input.z),
-        updatedAt: new Date().toISOString(),
-      };
+      const name = normaliseName(input.name);
+      const x = Math.round(input.x);
+      const y = Math.round(input.y);
+      const z = Math.round(input.z);
+
+      const existing = places.get(name) ?? null;
+      const changed =
+        existing === null ||
+        existing.x !== x ||
+        existing.y !== y ||
+        existing.z !== z ||
+        existing.dimension !== input.dimension ||
+        existing.note !== input.note;
+
+      const place: Place = { ...input, name, x, y, z, updatedAt: new Date().toISOString() };
 
       // Delete before set so re-recording a place moves it to the newest end of
-      // the insertion order, and the eviction below drops something else.
-      places.delete(place.name);
-      places.set(place.name, place);
+      // the insertion order, and the eviction below drops something else. Done
+      // even when unchanged: being visited again is itself evidence the place
+      // still matters, and it should not be the next thing evicted for that.
+      places.delete(name);
+      places.set(name, place);
 
       while (places.size > MAX_PLACES) {
         const oldest = places.keys().next().value;
@@ -106,7 +123,7 @@ export function createPlaces(agentId: string, store?: PlaceStore): Places {
       }
 
       store?.upsert(agentId, place);
-      return place;
+      return { place, changed };
     },
 
     all: () => [...places.values()],

@@ -52,7 +52,7 @@ const RESET = '\x1b[0m';
 
 const KILL_FILE = path.join(ROOT, 'STOP');
 const KILL_POLL_MS = 2_000;
-const DEFAULT_INTERVAL_MS = 30_000;
+const DEFAULT_INTERVAL_MS = 15_000;
 
 function flag(name: string): string | null {
   const index = process.argv.indexOf(`--${name}`);

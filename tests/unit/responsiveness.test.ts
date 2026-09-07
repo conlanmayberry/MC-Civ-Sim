@@ -2,7 +2,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createWaker } from '../../src/agent/waker.ts';
-import { orderCalls } from '../../src/agent/agent.ts';
+import { isEffective, orderCalls } from '../../src/agent/agent.ts';
+import type { ActionResult } from '../../src/bot/actions/index.ts';
 
 /**
  * How long an agent takes to answer is a behavioural property, not a detail.
@@ -62,6 +63,43 @@ describe('waker', () => {
     waker.nudge('Bob addressed you', true);
     waker.takeTrigger();
     assert.equal(waker.interruption(), null);
+  });
+});
+
+describe('turn effectiveness', () => {
+  const ok = (detail: Record<string, unknown> = {}): ActionResult => ({
+    ok: true,
+    action: 'test',
+    durationMs: 0,
+    detail,
+  });
+  const failed = (code: string): ActionResult => ({
+    ok: false,
+    action: 'test',
+    durationMs: 0,
+    detail: {},
+    error: { code: code as never, message: code },
+  });
+
+  test('an ordinary success counts as effective', () => {
+    assert.equal(isEffective(ok({ gained: 3 })), true);
+  });
+
+  test('a result explicitly marked unchanged does not', () => {
+    // set_goal restating a goal it already had, remember_place recording a
+    // place it already knew -- the turn ran, but nothing about the world
+    // model is different afterwards.
+    assert.equal(isEffective(ok({ goal: 'build a shelter', unchanged: true })), false);
+  });
+
+  test('a failed action still counts as effective', () => {
+    // unreachable, no_tool, insufficient_items are real information the
+    // agent did not have a moment ago. That is not the same situation as a
+    // turn that produced nothing at all, and must not be retried at the fast
+    // no-op cadence -- repeating a doomed action every four seconds would
+    // burn through the budget for no benefit.
+    assert.equal(isEffective(failed('unreachable')), true);
+    assert.equal(isEffective(failed('no_tool')), true);
   });
 });
 
