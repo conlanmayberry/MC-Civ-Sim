@@ -75,6 +75,19 @@ version must match the server exactly.
 
 ## Starting Minecraft
 
+**On Windows, just double-click:**
+
+| file | does |
+|---|---|
+| `setup-server.bat` | one-time: downloads and verifies the Paper jar, writes the config, asks you to accept the EULA |
+| `start-server.bat` | starts the server; the window stays interactive for `list` / `save-all` / `stop` |
+| `start-bot.bat` | starts the bot (server must already be running) |
+
+They change to the project directory themselves and install dependencies on
+first run, so they work from anywhere.
+
+The equivalent npm scripts, if you prefer a terminal:
+
 Prepare the server — downloads and checksum-verifies the Paper jar, installs the
 config, and asks you to accept the Minecraft EULA:
 
