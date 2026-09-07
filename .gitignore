@@ -40,3 +40,6 @@ Thumbs.db
 
 # Temporary servers created by npm run diagnose:movement
 .diagnose/
+
+# Kill-switch sentinel, created to stop a running agent
+STOP

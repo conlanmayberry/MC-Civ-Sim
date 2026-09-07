@@ -21,11 +21,13 @@
     "diagnose:pathfinder": "node scripts/diagnose-pathfinder.ts",
     "test": "node --test \"tests/unit/*.test.ts\"",
     "scenario:bootstrap": "node tests/scenario-bootstrap.ts",
-    "telemetry": "node src/telemetry/query.ts"
+    "telemetry": "node src/telemetry/query.ts",
+    "agent": "node src/agent/main.ts"
   },
   "dependencies": {
     "mineflayer": "^4.39.0",
-    "mineflayer-pathfinder": "github:PrismarineJS/mineflayer-pathfinder"
+    "mineflayer-pathfinder": "github:PrismarineJS/mineflayer-pathfinder",
+    "openai": "^7.10.0"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",

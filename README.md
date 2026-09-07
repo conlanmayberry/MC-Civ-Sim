@@ -12,7 +12,7 @@ testable system before the next begins.
 
 ---
 
-## Current stage: **Stages 1–4 complete ✅**
+## Current stage: **Stage 5 — autonomous agents ✅**
 
 One bot that connects, observes, obeys chat commands, and has a full
 deterministic action layer — mine, craft, place, move, eat, collect. No AI yet;
@@ -42,8 +42,16 @@ Telemetry did not require changing a single existing call site: the logger was
 shaped for this in Stage 2, so it was a sink swap. See
 [docs/architecture.md](docs/architecture.md).
 
-**There is no AI and no telemetry database yet.** See
-[What is not implemented](#what-is-not-implemented).
+Agents now decide for themselves using **OpenAI GPT-5.6 Luna**, behind a
+provider seam so the model can be changed
+([ADR-010](docs/decisions.md#adr-010--openai-behind-a-provider-seam-with-a-hard-spend-cap)).
+
+⚠️ **Running the agent spends real money** — every decision is a paid API call.
+There is a hard spend cap (default $5), rate limits, and three kill switches.
+`npm run agent -- --dry-run` exercises the entire loop for **$0.00**.
+
+**Next: the dashboard** — live map, agent inventory, personality, decision
+stream and thought injection.
 
 | Target | Version | Why |
 |---|---|---|
@@ -81,7 +89,9 @@ version must match the server exactly.
 |---|---|
 | `setup-server.bat` | one-time: downloads and verifies the Paper jar, writes the config, asks you to accept the EULA |
 | `start-server.bat` | starts the server; the window stays interactive for `list` / `save-all` / `stop` |
-| `start-bot.bat` | starts the bot (server must already be running) |
+| `start-bot.bat` | starts the scripted bot (no AI) |
+| `dry-run-agent.bat` | runs the agent loop with no API calls — **free** |
+| `start-agent.bat` | runs the agent for real — **spends money** |
 
 They change to the project directory themselves and install dependencies on
 first run, so they work from anywhere.
@@ -112,9 +122,48 @@ Check whether a newer Paper build exists (reports only, never upgrades):
 npm run minecraft:check-latest
 ```
 
-## Starting the bot
+## Running an agent
 
-With the server already running in another terminal:
+⚠️ **This spends money.** Try the free dry run first — it runs the complete
+observe → decide → act → record loop against the live server with scripted
+decisions instead of a model:
+
+```bash
+npm run agent -- --dry-run
+```
+
+Then, with `OPENAI_API_KEY` set in `.env`:
+
+```bash
+npm run agent
+```
+
+Cost, model, budget and interval are printed before the first call. Useful
+overrides:
+
+```bash
+npm run agent -- --budget 1 --interval 60
+```
+
+**Stopping it** — any of three, because an autonomous process that spends money
+needs more than one:
+
+| how | when to use |
+|---|---|
+| `agent stop` in Minecraft chat | you are in the game |
+| Ctrl-C | you are at the terminal |
+| create a file named `STOP` | neither of the above; also what the dashboard will use |
+
+**Steering it** — say `agent tell <something>` in chat to inject a thought. It
+lands on the next decision, and is recorded to telemetry as an operator
+intervention so analysis can see exactly where a human interfered.
+
+`agent status` reports decisions made and spend so far.
+
+## Starting the scripted bot
+
+The Stage 2/3 bot, with no AI — useful for testing actions directly. With the
+server already running in another terminal:
 
 ```bash
 npm run bot
@@ -231,6 +280,9 @@ the (currently non-secret) configuration.
 - SQLite telemetry: events + snapshots, batched, WAL, with a query CLI
 - Nine actions with typed results: move, follow, mine, collect, craft, place, eat, equip, stop
 - World-version guard: refuses to open a world built by a different Minecraft
+- Autonomous agents on OpenAI, with identity and personality
+- Spend cap, rate limits and three kill switches — all fail closed
+- Thought injection, recorded as an operator intervention
 
 ## What is not implemented
 
@@ -239,13 +291,13 @@ the (currently non-secret) configuration.
 | 2 | Mineflayer bot — connect, observe, chat | **done** |
 | 3 | Deterministic bot actions — mine, craft, place, move | **done** |
 | 4 | Telemetry event bus + SQLite | **done** |
-| 5 | Claude decision loop | not started |
-| 6 | Agent identity and goals | not started |
+| 5 | AI decision loop (OpenAI) | **done** |
+| 6 | Agent identity and goals | identity + personality **done**; goals not started |
 | 7 | Persistent agent memory | not started |
 | 8 | Multiple agents | not started |
 | 9 | Agent-to-agent communication | not started |
 | 10–12 | Economy, relationships, settlements | not started |
-| 13 | Dashboard | not started |
+| 13 | Dashboard | **next** |
 | 14 | Experiment runner | not started |
 
 ## Documentation

@@ -125,6 +125,9 @@ The operator wants to watch or join from a second machine.
 
 ## ADR-003 — AI provider authentication deferred to Stage 5
 
+> **Superseded by [ADR-010](#adr-010--openai-behind-a-provider-seam-with-a-hard-spend-cap).**
+> The deferred decision has now been made: OpenAI, via `OPENAI_API_KEY`.
+
 **Date:** 2026-09-06
 **Status:** Open — deliberately undecided
 
@@ -484,3 +487,99 @@ registered *before* the one that assigns `bot.health`, so health is genuinely
 unset at that instant. The store therefore coerces non-finite values to NULL
 rather than letting a partial row destroy a whole snapshot, and the spawn
 snapshot is taken a second late so it captures real values.
+
+
+---
+
+## ADR-010 — OpenAI behind a provider seam, with a hard spend cap
+
+**Date:** 2026-09-06 (Stage 5)
+**Status:** accepted, superseding [ADR-003](#adr-003--ai-provider-authentication-deferred-to-stage-5)
+
+Agents decide using **OpenAI**, model **`gpt-5.6-luna`**, authenticated with
+`OPENAI_API_KEY` from `.env`.
+
+### Why OpenAI, when the brief says Claude
+
+An operator decision. The brief names Claude *and* requires "keep the AI
+provider abstraction clean enough that the model can be changed later" — so the
+right response was not to argue but to build the seam the brief asks for and put
+OpenAI behind it. [src/ai/provider.ts](../src/ai/provider.ts) defines the
+interface; [src/ai/openai.ts](../src/ai/openai.ts) is the only file in the
+project that imports the SDK. Changing provider means writing one more
+implementation of `AiProvider`.
+
+The SDK is `openai` 7.10.0: Node ≥22, **zero dependencies**, which fits the
+project's dependency policy better than most of what is already installed.
+
+### Why Luna, and why the model is pinned in code
+
+| model | $/M in | $/M out | ~$/agent-hour at one decision per 30s |
+|---|---|---|---|
+| GPT-6 Astra | 10 | 50 | ~3.60 |
+| GPT-5.6 Sol | 4 | 20 | ~1.44 |
+| GPT-5.6 Terra | 2 | 12 | ~0.77 |
+| **GPT-5.6 Luna** | **0.20** | **1.20** | **~0.08** |
+
+A 45x spread. Three agents for eight hours is ~$1.85 on Luna against ~$35 on
+Sol, and this is a system designed to run for days.
+
+The model lives in [src/ai/pricing.ts](../src/ai/pricing.ts), not `.env`,
+**because the spend cap depends on knowing its price**. A model set by
+environment variable could be one the price table has never heard of, and the
+cap would then be enforcing a number it cannot compute. Changing model is a
+deliberate edit that adds real prices alongside it.
+
+### The safety rails are the point, not a formality
+
+An agent loop is a program that spends money in a `while` loop. Everything in
+[src/ai/budget.ts](../src/ai/budget.ts) **fails closed**:
+
+- **Spend cap** (default $5) from real reported token usage, warning at
+  50/75/90%, stopping at 100%.
+- **An unpriced model throws** rather than costing zero. A silent zero reads as
+  "free" and spends without limit — the worst possible failure mode, and the one
+  a naive implementation lands on.
+- **Rate limits** on requests/min and decisions/min, so event triggers cannot
+  storm the API. A rate limit makes the agent *wait*; only a cap or a duration
+  ceiling *stops* it.
+- **Three kill switches**: `agent stop` in chat, Ctrl-C, and a `STOP` file
+  polled every two seconds. The file exists because the terminal is not always
+  to hand, and it is what a dashboard button will use.
+- **Cost is disclosed before the first call** — model, prices, cap and interval
+  are printed at startup, every time.
+
+Cached input is billed separately and `input_tokens` *includes* the cached
+portion, so the cost calculation subtracts it. Charging the full rate on the
+whole amount would drift high and trip the cap early.
+
+### The tool surface is the security boundary
+
+The model gets exactly the nine actions from Stage 3, plus `send_chat`
+([src/ai/tools.ts](../src/ai/tools.ts)). There is no tool that runs code, reads
+a file, spawns a process or reaches the host. That is principle 16 of the brief,
+enforced by construction rather than by instruction, and it is what makes the
+next point acceptable.
+
+**Player chat reaches an agent's observations**, so a person can try to talk an
+agent into something. That is safe because the tool surface is closed — the
+worst outcome is a bot playing Minecraft badly in a world we can delete — and it
+is a legitimate object of study rather than a hole to plug: Stage 9 is explicitly
+about misinformation between agents.
+
+### A note on strict mode
+
+OpenAI's `strict: true` requires `additionalProperties: false` **and every
+property listed in `required`**. Our actions have genuinely optional arguments,
+so those are declared nullable (`['integer','null']`) and `null` is translated
+to "use the default" by the dispatcher. A unit test asserts every schema
+satisfies this, because the alternative is discovering it as a runtime API
+rejection during a paid run.
+
+### Testing something that costs money
+
+`createStubProvider` returns scripted decisions at zero cost, and
+`npm run agent -- --dry-run` runs the entire observe/decide/act/record loop
+against the live Minecraft server with it. That is not a lesser mode — it is how
+the loop is verified before an API key is ever used, and it is why the agent
+loop is testable in CI at all.

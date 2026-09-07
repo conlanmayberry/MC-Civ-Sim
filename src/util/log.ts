@@ -38,7 +38,15 @@ export type EventType =
   | 'block_placed'
   | 'item_collected'
   | 'item_crafted'
-  | 'item_consumed';
+  | 'item_consumed'
+  // Stage 5 -- the AI layer. `decision` carries structured metadata only:
+  // goal, chosen tools, a one-line reason, tokens and cost. Never
+  // chain-of-thought (project brief, Stage 13).
+  | 'decision'
+  | 'thought_injected'
+  | 'budget_warning'
+  | 'agent_started'
+  | 'agent_stopped';
 
 export interface TelemetryEvent {
   readonly timestamp: string;
