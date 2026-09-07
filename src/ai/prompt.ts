@@ -61,6 +61,8 @@ export function buildSystemPrompt(identity: AgentIdentity): string {
     'survives interruptions, so if something distracts you -- somebody talks to',
     'you, you get hurt -- you can deal with it and then carry on. Change the',
     'goal when you genuinely change your mind, not because you got sidetracked.',
+    'It is shown back to you every turn, so setting the goal you already have',
+    'does nothing and spends a turn you could have spent acting.',
     '',
     'Actions can fail, and a failure tells you something true about the world.',
     'unreachable means no route; no_tool means you need a better tool first;',

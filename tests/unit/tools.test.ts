@@ -175,6 +175,27 @@ describe('tool dispatch', () => {
     assert.deepEqual(calls, [], 'set_goal must not perform any world action');
   });
 
+  test('restating the goal you already have is reported as doing nothing', async () => {
+    // Six identical set_goal calls in one ten-minute run, each spending a whole
+    // turn. The model cannot tell a no-op from a change unless it is told.
+    const result = await invokeTool(
+      stubActions([]),
+      () => {},
+      'set_goal',
+      { goal: 'build a shelter' },
+      () => false,
+    );
+
+    assert.equal(result.ok, true, 'nothing went wrong -- it just achieved nothing');
+    assert.equal(result.detail['unchanged'], true);
+    assert.match(String(result.detail['note']), /already your goal/);
+  });
+
+  test('a goal that did change carries no such note', async () => {
+    const result = await invokeTool(stubActions([]), () => {}, 'set_goal', { goal: 'find food' }, () => true);
+    assert.equal(result.detail['unchanged'], undefined);
+  });
+
   test('send_chat routes to chat rather than to an action', async () => {
     const said: string[] = [];
     const result = await invokeTool(stubActions([]), (m) => said.push(m), 'send_chat', {

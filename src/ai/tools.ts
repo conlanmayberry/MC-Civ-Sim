@@ -136,7 +136,8 @@ export const TOOL_SCHEMAS: readonly ToolSchema[] = [
       'State what you are working on. It is shown to you every turn and ' +
       'persists until you change it, so use it for anything spanning more than ' +
       'one turn. Change it when you genuinely change your mind, not because ' +
-      'something interrupted you.',
+      'something interrupted you. Setting the goal you already have does ' +
+      'nothing -- you do not need to repeat it.',
     parameters: object({
       goal: str('A short description, e.g. "build a shelter before nightfall".'),
     }),
@@ -188,7 +189,7 @@ export async function invokeTool(
   sendChat: (message: string) => void,
   name: string,
   args: Record<string, unknown>,
-  setGoal: (goal: string) => void = () => {},
+  setGoal: (goal: string) => boolean | void = () => {},
 ): Promise<ActionResult> {
   const fail = (message: string): ActionResult => ({
     ok: false,
@@ -252,8 +253,23 @@ export async function invokeTool(
 
       case 'set_goal': {
         const goal = reqStr(args['goal'], 'goal').slice(0, 200);
-        setGoal(goal);
-        return { ok: true, action: 'set_goal', durationMs: 0, detail: { goal } };
+        const changed = setGoal(goal) !== false;
+        return {
+          ok: true,
+          action: 'set_goal',
+          durationMs: 0,
+          detail: changed
+            ? { goal }
+            : {
+                goal,
+                // Not a failure -- nothing went wrong -- but the model spent a
+                // whole turn restating a goal it already had, six times in one
+                // run. It cannot tell that from a successful change unless the
+                // result says so.
+                unchanged: true,
+                note: 'that was already your goal, so this turn did nothing; it is shown to you every turn without being set',
+              },
+        };
       }
 
       case 'send_chat': {

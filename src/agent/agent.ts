@@ -219,8 +219,13 @@ export function createAgent(options: AgentOptions): Agent {
         call.name,
         call.args,
         (next) => {
+          // Restating the same goal is not a change, and recording it as one
+          // makes the telemetry read as though the agent kept changing its
+          // mind when it was in fact stuck.
+          if (next === goal) return false;
           goal = next;
           log.event('goal_set', { goal: next, cycle });
+          return true;
         },
       );
       results.push(describeForModel(call.name, result));

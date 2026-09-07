@@ -101,6 +101,9 @@ export function createSurviveActions(ctx: ActionContext) {
           if (existing.boundingBox !== 'empty') {
             throw new ActionFailure('blocked', `${existing.name} already occupies that position`);
           }
+          // Remembered so the placement can be verified by CHANGE rather than
+          // by solidity -- see below.
+          const before = existing.name;
 
           // You cannot place a block where you are standing, and the server
           // silently refuses rather than saying so -- which showed up as a
@@ -158,8 +161,18 @@ export function createSurviveActions(ctx: ActionContext) {
 
           await sleep(250);
 
+          // Verified by CHANGE, not by solidity.
+          //
+          // Checking `boundingBox === 'empty'` meant a torch could never
+          // succeed: torches have no collision box, so a perfectly good torch
+          // read as "still empty, so nothing was placed". The agent was told
+          // its light had failed, tried again, and was told the same thing
+          // seven times running while standing in a lit shelter -- which is
+          // most of why its shelters end up unfinished. The same was true of
+          // every non-solid block: saplings, carpets, redstone, signs, plants.
           const placed = bot.blockAt(target);
-          if (placed === null || placed.boundingBox === 'empty') {
+          const changed = placed !== null && placed.name !== before && placed.name !== 'air';
+          if (!changed) {
             throw new ActionFailure(
               'failed',
               placeError === null
