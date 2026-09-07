@@ -91,13 +91,40 @@ version must match the server exactly.
 | `start-server.bat` | starts the server; the window stays interactive for `list` / `save-all` / `stop` |
 | `start-bot.bat` | starts the scripted bot (no AI) |
 | `dry-run-agent.bat` | runs the agent loop with no API calls — **free** |
-| `start-agent.bat` | runs the agent for real — **spends money** |
-| `talk-to-agent.bat` | chat with a running agent from a terminal |
+| `start-agent.bat` | runs the default agent (Alice) for real — **spends money** |
+| `start-alice.bat` / `start-bob.bat` / `start-carla.bat` / `start-dmitri.bat` | run one specific agent — **spends money** |
+| `start-all-agents.bat` | run all four at once, each in its own window — **spends money, ×4** |
+| `talk-to-agent.bat` | chat with the default agent from a terminal; pass a port (`talk-to-agent.bat 25581`) to reach another |
+| `talk-alice.bat` / `talk-bob.bat` / `talk-carla.bat` / `talk-dmitri.bat` | chat with one specific agent |
 | `dashboard.bat` | open the web dashboard |
 | `response-times.bat` | how long the agent takes to answer; pass `all` to compare runs |
 
 They change to the project directory themselves and install dependencies on
 first run, so they work from anywhere.
+
+## Running several agents at once
+
+Four identities ship in `config/agents/`: Alice, Bob, Carla and Dmitri, each
+with different traits and values on purpose — the brief is about behaviour
+that emerges, and four copies of the same personality would not show much of
+that. Each has its own `start-<name>.bat`, pinned to its own control port
+(25580–25583) so the dashboard, `talk-to-agent.bat` and the telemetry can tell
+them apart. `agent_id` is on every row already (Stage 4), so nothing about
+querying or reviewing a run changes with more than one agent in it.
+
+**Cost is per agent, not shared.** Each has its own `AI_BUDGET_USD` cap
+(default $5), so four running to their caps is up to $20, not $5 — see
+`start-all-agents.bat`'s own comments for how to lower that.
+
+**The `STOP` file stops every agent**, since it is one file shared by the
+whole project — that is the "something is wrong, halt everything" switch. To
+stop one agent, close its window, Ctrl-C it, or use `/stop` from
+`npm run talk -- --port <its port>`.
+
+To add a fifth: copy `config/agents/alice.json`, give it a new `id` and
+`username`, then copy a `start-<name>.bat` with an unused
+`AGENT_CONTROL_PORT` (25584 and up — `dashboard.bat` already scans eight
+ports past 25580, so no dashboard change is needed for a fifth or sixth).
 
 The equivalent npm scripts, if you prefer a terminal:
 

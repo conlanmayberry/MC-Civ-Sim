@@ -12,12 +12,21 @@ REM    /state             decisions made, spend so far
 REM    /stop              halt the agent
 REM    /quit              leave this prompt (agent keeps running)
 REM
-REM  An agent must already be running (start-agent.bat or
-REM  dry-run-agent.bat).
+REM  Talks to Alice by default. Running several agents? Say which
+REM  one, either by double-clicking talk-bob.bat / talk-carla.bat /
+REM  talk-dmitri.bat, or from a terminal:
+REM      talk-to-agent.bat 25581
+REM
+REM  An agent must already be running (start-alice.bat and friends,
+REM  or dry-run-agent.bat).
 REM ============================================================
 
 cd /d "%~dp0"
 title MC-Civ-Sim - talk to agent
 
-call npm run talk
+if "%~1"=="" (
+  call npm run talk
+) else (
+  call npm run talk -- --port %1
+)
 pause

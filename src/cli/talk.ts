@@ -5,9 +5,15 @@
  *     npm run talk                      interactive
  *     npm run talk -- "hello there"     one message and exit
  *     npm run talk -- --tell "go mine"  operator instruction, not conversation
+ *     npm run talk -- --port 25581      talk to a specific agent, not the default
  *
  * The point is not having to launch Minecraft and stand next to an agent to
  * say anything to it.
+ *
+ * With several agents running, each owns a different control port (see
+ * config/agents/ and the start-<name>.bat files), and --port picks which one
+ * this session talks to. AGENT_CONTROL_PORT in .env sets the default when the
+ * flag is omitted.
  *
  * SAY vs TELL matters, and the distinction is kept visible on purpose:
  *
@@ -33,12 +39,29 @@ const YELLOW = '\x1b[33m';
 const RESET = '\x1b[0m';
 
 const env = { ...loadEnvFile(), ...process.env };
-const port = Number(env['AGENT_CONTROL_PORT'] ?? '') > 0
-  ? Number(env['AGENT_CONTROL_PORT'])
-  : DEFAULT_CONTROL_PORT;
+
+const rawArgs = process.argv.slice(2);
+
+/** Pulls `--name value` out of the args, returning the value and the rest. */
+function takeFlag(args: string[], name: string): { value: string | null; rest: string[] } {
+  const index = args.indexOf(`--${name}`);
+  if (index === -1) return { value: null, rest: args };
+  const rest = [...args.slice(0, index), ...args.slice(index + 2)];
+  return { value: args[index + 1] ?? null, rest };
+}
+
+// --port has to be pulled out before the message is assembled, or its value
+// ("25581") is left behind and typed as the first word of what gets said.
+const { value: portFlag, rest: withoutPort } = takeFlag(rawArgs, 'port');
+const port =
+  Number(portFlag ?? '') > 0
+    ? Number(portFlag)
+    : Number(env['AGENT_CONTROL_PORT'] ?? '') > 0
+      ? Number(env['AGENT_CONTROL_PORT'])
+      : DEFAULT_CONTROL_PORT;
 const base = `http://127.0.0.1:${port}`;
 
-const args = process.argv.slice(2);
+const args = withoutPort;
 const tellMode = args.includes('--tell');
 const message = args.filter((a) => !a.startsWith('--')).join(' ').trim();
 
@@ -93,7 +116,9 @@ function noAgent(): never {
   console.error('');
   console.error(`  ${RED}No agent is listening on ${base}.${RESET}`);
   console.error(`  ${DIM}Start one with:  npm run agent${RESET}`);
-  console.error(`  ${DIM}(or set AGENT_CONTROL_PORT if it is on another port)${RESET}`);
+  console.error(
+    `  ${DIM}Running several? Pick one with --port, e.g. npm run talk -- --port 25581${RESET}`,
+  );
   console.error('');
   process.exit(1);
 }
