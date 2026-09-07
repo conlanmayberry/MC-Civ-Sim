@@ -27,6 +27,7 @@ import { TOOL_SCHEMAS, invokeTool } from '../ai/tools.ts';
 import type { AgentIdentity } from './identity.ts';
 import type { Inbox } from './inbox.ts';
 import type { Hearing } from './hearing.ts';
+import { createWaker } from './waker.ts';
 
 export interface AgentOptions {
   identity: AgentIdentity;
@@ -81,6 +82,23 @@ const MAX_TOOL_CALLS = 10;
 /** And a wall-clock ceiling, since a batch of moves can be slow rather than many. */
 const MAX_ACTING_MS = 120_000;
 
+/**
+ * Speech first, whatever order the model listed things in.
+ *
+ * What an agent says is composed before any of the batch runs, so it can never
+ * depend on how an action turned out -- but leaving `send_chat` behind a
+ * forty-second mining trip makes the reply land forty seconds late, which to
+ * whoever asked is indistinguishable from being ignored. Nothing is lost by
+ * saying it first, and the wait is what people actually notice.
+ *
+ * sort() is stable, so everything else keeps the order it was decided in.
+ */
+export function orderCalls<T extends { name: string }>(calls: readonly T[]): T[] {
+  return [...calls].sort(
+    (a, b) => Number(b.name === 'send_chat') - Number(a.name === 'send_chat'),
+  );
+}
+
 export function createAgent(options: AgentOptions): Agent {
   const { identity, provider, budget, inbox, hearing, log } = options;
 
@@ -91,34 +109,18 @@ export function createAgent(options: AgentOptions): Agent {
   let goal: string | null = null;
   let cycle = 0;
   let stopping: string | null = null;
-  let wakeEarly: (() => void) | null = null;
-  let nudgeReason: string | null = null;
+  const waker = createWaker();
 
-  function nudge(reason: string): void {
-    nudgeReason = reason;
-    wakeEarly?.();
-  }
-
-  /** Sleep, but wake immediately if something interesting happens. */
-  async function waitForNextCycle(ms: number): Promise<void> {
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        wakeEarly = null;
-        resolve();
-      }, ms);
-      timer.unref();
-      wakeEarly = () => {
-        clearTimeout(timer);
-        wakeEarly = null;
-        resolve();
-      };
-    });
+  function nudge(reason: string, urgent = false): void {
+    waker.nudge(reason, urgent);
   }
 
   async function runOneCycle(bot: Bot, actions: Actions): Promise<void> {
     cycle++;
-    const trigger = nudgeReason ?? 'interval';
-    nudgeReason = null;
+    // Consuming the trigger also clears any interruption: from here on, only
+    // news arriving *after* this point -- including during the API call, which
+    // this decision cannot have accounted for -- may cut the batch short.
+    const trigger = waker.takeTrigger();
 
     const injections = inbox.drain();
     for (const injection of injections) {
@@ -137,6 +139,9 @@ export function createAgent(options: AgentOptions): Agent {
     const heard = hearing.takeNew();
     const observation = buildObservation(bot, cycle, heard, goal);
 
+    // Timed because thinking is dead air: the agent stands still for it, and
+    // without a number there is no way to tell a slow model from a slow loop.
+    const decideStarted = Date.now();
     const outcome = await provider.decide({
       system,
       observation,
@@ -144,6 +149,7 @@ export function createAgent(options: AgentOptions): Agent {
       injections: injections.map((i) => i.text),
       tools: [...TOOL_SCHEMAS],
     });
+    const decisionMs = Date.now() - decideStarted;
 
     const spent = budget.record(outcome.model, outcome.usage);
     const warning = budget.takeWarning();
@@ -156,6 +162,7 @@ export function createAgent(options: AgentOptions): Agent {
     log.event('decision', {
       cycle,
       trigger,
+      durationMs: decisionMs,
       summary: outcome.summary,
       tools: outcome.toolCalls.map((c) => c.name),
       args: outcome.toolCalls.map((c) => c.args),
@@ -178,8 +185,21 @@ export function createAgent(options: AgentOptions): Agent {
     const results: string[] = [];
     const actingDeadline = Date.now() + MAX_ACTING_MS;
 
-    for (const call of outcome.toolCalls.slice(0, MAX_TOOL_CALLS)) {
+    const calls = orderCalls(outcome.toolCalls);
+
+    for (const call of calls.slice(0, MAX_TOOL_CALLS)) {
       if (stopping !== null) break;
+
+      // Somebody said the agent's name while it was working. Finishing an
+      // eight-step plan first is the behaviour of a machine; stopping and
+      // reconsidering with the new information is the point of the loop. The
+      // goal persists, so it can pick the work back up next turn.
+      const interruption = waker.interruption();
+      if (interruption !== null) {
+        results.push(`(stopped early -- ${interruption}; remaining steps skipped)`);
+        break;
+      }
+
       if (Date.now() > actingDeadline) {
         // Stopping here rather than pressing on: the world has moved since the
         // decision was made, and continuing to execute a stale plan is worse
@@ -210,8 +230,8 @@ export function createAgent(options: AgentOptions): Agent {
       if (!result.ok && result.error?.code === 'interrupted') break;
     }
 
-    if (outcome.toolCalls.length > MAX_TOOL_CALLS) {
-      results.push(`(only the first ${MAX_TOOL_CALLS} of ${outcome.toolCalls.length} were run)`);
+    if (calls.length > MAX_TOOL_CALLS) {
+      results.push(`(only the first ${MAX_TOOL_CALLS} of ${calls.length} were run)`);
     }
 
     history.push(`Turn ${cycle}: ${outcome.summary}\n${results.join('\n')}`);
@@ -225,7 +245,7 @@ export function createAgent(options: AgentOptions): Agent {
     stop(reason) {
       stopping ??= reason;
       budget.stop('operator');
-      wakeEarly?.();
+      waker.nudge(reason, true);
     },
 
     nudge,
@@ -234,8 +254,13 @@ export function createAgent(options: AgentOptions): Agent {
       const message = hearing.hear(from, text, distance);
       if (message === null) return;
 
-      // Being addressed by name deserves an answer now, not in half a minute.
-      nudge(message.directed ? `${from} addressed you` : `chat from ${from}`);
+      // Being addressed by name deserves an answer now, not in half a minute --
+      // and it is urgent enough to stop what the agent is part-way through,
+      // which chat that merely happened nearby is not.
+      nudge(
+        message.directed ? `${from} addressed you` : `chat from ${from}`,
+        message.directed,
+      );
     },
 
     async run(bot, actions) {
@@ -318,7 +343,7 @@ export function createAgent(options: AgentOptions): Agent {
           stopReason = stopping;
           break;
         }
-        await waitForNextCycle(options.intervalMs);
+        await waker.wait(options.intervalMs);
       }
 
       log.event('agent_stopped', {
