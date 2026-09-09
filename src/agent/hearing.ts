@@ -20,8 +20,10 @@ export interface HeardMessage {
   at: string;
   /** Metres to the speaker, or null when they could not be located. */
   distance: number | null;
-  /** The message names this agent, so it is probably meant for them. */
+  /** Addressed to this agent: by name, as part of "everyone", or by a person. */
   directed: boolean;
+  /** Said by a person rather than by another agent. */
+  fromOperator: boolean;
 }
 
 export interface HearingOptions {
@@ -29,6 +31,15 @@ export interface HearingOptions {
   radius?: number;
   /** How many recent messages to remember. */
   keep?: number;
+  /**
+   * Usernames belonging to other agents. Anyone else speaking is a person.
+   *
+   * A human in this world is the operator, not another participant, and their
+   * messages always reach an agent -- otherwise a rule aimed at agents
+   * chattering among themselves also silences the person running the
+   * experiment.
+   */
+  agentNames?: Iterable<string>;
 }
 
 export interface Hearing {
@@ -54,9 +65,25 @@ export function isDirectedAt(username: string, text: string): boolean {
   return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
 }
 
+/**
+ * Words that address the whole group.
+ *
+ * "Everyone, come to me" names nobody, so once only directed messages woke an
+ * agent, a message meant for all four woke none of them -- the operator was
+ * talking to a room that had quietly stopped listening. Addressing everybody
+ * has to count as addressing each of them.
+ */
+const COLLECTIVE =
+  /\b(everyone|everybody|all of you|you all|y'?all|team|guys|folks|anyone|somebody|someone)\b/i;
+
+export function isCollective(text: string): boolean {
+  return COLLECTIVE.test(text);
+}
+
 export function createHearing(username: string, options: HearingOptions = {}): Hearing {
   const radius = options.radius ?? Number.POSITIVE_INFINITY;
   const keep = options.keep ?? DEFAULT_KEEP;
+  const agentNames = new Set(options.agentNames ?? []);
 
   const heard: HeardMessage[] = [];
   let unreadFrom = 0;
@@ -71,12 +98,21 @@ export function createHearing(username: string, options: HearingOptions = {}): H
       // since refusing them would silently drop operator messages.
       if (distance !== null && distance > radius) return null;
 
+      // Anyone who is not a known agent is a person. Unknown names default to
+      // "person" on purpose: failing to hear the operator is a worse mistake
+      // than occasionally treating an agent as one.
+      const fromOperator = !agentNames.has(from);
+
       const message: HeardMessage = {
         from,
         text: trimmed,
         at: new Date().toISOString(),
         distance,
-        directed: isDirectedAt(username, trimmed),
+        // A person speaking is always addressing this agent -- they are the
+        // operator, and there are only a few listeners. Between agents it
+        // takes a name or an explicit "everyone".
+        directed: fromOperator || isDirectedAt(username, trimmed) || isCollective(trimmed),
+        fromOperator,
       };
 
       heard.push(message);
@@ -107,7 +143,11 @@ export function describeHearing(messages: HeardMessage[]): string[] {
   const lines = ['Recent chat you heard:'];
   for (const message of messages) {
     const where = message.distance === null ? '' : ` (${message.distance}m away)`;
-    const flag = message.directed ? '  <-- this names you' : '';
+    const flag = message.fromOperator
+      ? '  <-- a person said this to you'
+      : message.directed
+        ? '  <-- addressed to you'
+        : '';
     lines.push(`  <${message.from}>${where} ${message.text}${flag}`);
   }
   return lines;

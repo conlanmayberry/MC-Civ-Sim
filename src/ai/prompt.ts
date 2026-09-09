@@ -34,6 +34,8 @@ import type { Place } from '../agent/places.ts';
 import { describePlaces } from '../agent/places.ts';
 import type { Setback } from '../agent/setbacks.ts';
 import { describeSetbacks } from '../agent/setbacks.ts';
+import type { Order } from '../agent/orders.ts';
+import { describeOrder } from '../agent/orders.ts';
 
 /**
  * How many past cycles the model is reminded of.
@@ -150,7 +152,11 @@ export function buildSystemPrompt(identity: AgentIdentity): string {
     'crops. If cattle or a hunt come up as the plan, that plan cannot work;',
     'look for berries, crops, or another farmable source instead.',
     '',
-    'Nobody is going to tell you what to do next. Decide.',
+    'Sometimes a person will give you a standing order. It appears at the very',
+    'top of your situation, it outranks your goal and your plans, and it stays',
+    'until they lift it -- not until you decide it is finished. Follow it.',
+    '',
+    'Otherwise nobody is going to tell you what to do next. Decide.',
   ].join('\n');
 }
 
@@ -163,6 +169,8 @@ export interface ObservationContext {
   setbacks?: readonly Setback[];
   /** How much of its chat allowance is left -- see agent/voice.ts. */
   voice?: readonly string[];
+  /** A standing order from the operator, which outranks everything else. */
+  order?: Order | null;
 }
 
 /** A compact, readable snapshot. JSON would cost more tokens and read worse. */
@@ -171,13 +179,25 @@ export function buildObservation(
   cycle: number,
   context: ObservationContext = {},
 ): string {
-  const { heard = [], goal = null, places = [], setbacks = [], voice = [] } = context;
+  const {
+    heard = [],
+    goal = null,
+    places = [],
+    setbacks = [],
+    voice = [],
+    order = null,
+  } = context;
   const self = observeSelf(bot);
   const inventory = observeInventory(bot);
   const entities = observeEntities(bot, ENTITY_RADIUS, MAX_ENTITIES);
   const blocks = observeBlocks(bot, BLOCK_RADIUS);
 
   const lines: string[] = [`--- turn ${cycle} ---`];
+
+  // Before anything else, including the goal: an order that appeared after
+  // three paragraphs of world state would be competing with them rather than
+  // overriding them.
+  lines.push(...describeOrder(order));
 
   // Stated first: it is the thing most easily lost, and the reason an agent
   // that gets talked to mid-task never returns to it.

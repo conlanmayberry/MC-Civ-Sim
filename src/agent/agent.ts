@@ -30,6 +30,7 @@ import { TOOL_SCHEMAS, invokeTool } from '../ai/tools.ts';
 import type { AgentIdentity } from './identity.ts';
 import type { Inbox } from './inbox.ts';
 import type { Hearing } from './hearing.ts';
+import type { Orders } from './orders.ts';
 import type { Places } from './places.ts';
 import { createSetbacks } from './setbacks.ts';
 import { createVoice } from './voice.ts';
@@ -42,6 +43,8 @@ export interface AgentOptions {
   inbox: Inbox;
   hearing: Hearing;
   places: Places;
+  /** Standing orders from the operator, which override the agent's own plans. */
+  orders: Orders;
   log: Logger;
   /** Normal thinking interval. */
   intervalMs: number;
@@ -52,8 +55,13 @@ export interface AgentOptions {
 export interface Agent {
   /** Begin thinking. Resolves when the agent stops. */
   run: (bot: Bot, actions: Actions) => Promise<void>;
-  /** Ask for an early decision, e.g. after taking damage. */
-  nudge: (reason: string) => void;
+  /**
+   * Ask for an early decision, e.g. after taking damage.
+   *
+   * `urgent` also abandons the rest of the batch in progress. An operator
+   * order that waited for a ten-step plan to finish would not be an override.
+   */
+  nudge: (reason: string, urgent?: boolean) => void;
   /**
    * Deliver something said nearby. Records it and, if it names this agent,
    * wakes it to reply now rather than at the next interval.
@@ -196,7 +204,7 @@ function rememberPlaceWith(
 }
 
 export function createAgent(options: AgentOptions): Agent {
-  const { identity, provider, budget, inbox, hearing, places, log } = options;
+  const { identity, provider, budget, inbox, hearing, places, orders, log } = options;
 
   const system = buildSystemPrompt(identity);
   let history: string[] = [];
@@ -261,6 +269,7 @@ export function createAgent(options: AgentOptions): Agent {
       places: places.all(),
       setbacks: setbacks.all(cycle),
       voice: voice.describe(),
+      order: orders.current(),
     });
 
     // Timed because thinking is dead air: the agent stands still for it, and
@@ -286,6 +295,10 @@ export function createAgent(options: AgentOptions): Agent {
     log.event('decision', {
       cycle,
       trigger,
+      // So analysis can separate turns the agent decided for itself from turns
+      // it was under instruction. Without this the two are indistinguishable
+      // afterwards, and the run stops being evidence of anything.
+      underOrder: orders.current() === null ? null : orders.current()?.text,
       durationMs: decisionMs,
       summary: outcome.summary,
       tools: outcome.toolCalls.map((c) => c.name),

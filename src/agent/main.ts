@@ -37,9 +37,10 @@ import { createOpenAiProvider } from '../ai/openai.ts';
 import { createStubProvider } from '../ai/provider.ts';
 import type { AiProvider } from '../ai/provider.ts';
 import { createAgent } from './agent.ts';
-import { loadIdentityById } from './identity.ts';
+import { agentUsernames, loadIdentityById } from './identity.ts';
 import { createInbox } from './inbox.ts';
 import { createHearing } from './hearing.ts';
+import { createOrders } from './orders.ts';
 import { createPlaces } from './places.ts';
 import { DEFAULT_CONTROL_PORT, startControlServer } from './control.ts';
 import type { ControlServer } from './control.ts';
@@ -143,7 +144,13 @@ const hearing = createHearing(identity.username, {
   radius: Number(env['AGENT_HEARING_RADIUS'] ?? '') > 0
     ? Number(env['AGENT_HEARING_RADIUS'])
     : Number.POSITIVE_INFINITY,
+  // Everyone in config/agents/ is an agent; anyone else in the world is a
+  // person, and a person is the operator rather than another participant.
+  agentNames: agentUsernames(),
 });
+
+// Standing orders from the operator. Empty unless one is given.
+const orders = createOrders();
 
 const telemetry = createTelemetry(identity.id, {
   minecraftVersion: config.version,
@@ -206,6 +213,7 @@ const agent = createAgent({
   inbox,
   hearing,
   places,
+  orders,
   log,
   intervalMs,
   onStopped: (reason) => {
@@ -349,6 +357,48 @@ session = connect(
         }
         return;
       }
+      // A standing order, which persists until lifted -- the difference
+      // between "do this now" and "do this until I say otherwise".
+      if (text.startsWith('agent obey ')) {
+        const given = orders.give(text.slice('agent obey '.length), username);
+        if (given === null) {
+          bot.chat('Obey what?');
+          return;
+        }
+        log.event('thought_injected', {
+          kind: 'standing_order_given',
+          from: username,
+          text: given.text,
+          cycle: agent.cycles(),
+        });
+        bot.chat(`Understood. Standing by on: ${given.text}`);
+        agent.nudge(`standing order from ${username}`, true);
+        return;
+      }
+
+      if (text === 'agent release' || text === 'agent free') {
+        const lifted = orders.release();
+        log.event('thought_injected', {
+          kind: 'standing_order_lifted',
+          from: username,
+          text: lifted?.text ?? null,
+          cycle: agent.cycles(),
+        });
+        bot.chat(lifted === null ? 'I had no orders.' : 'Released — back to my own judgement.');
+        agent.nudge(`released by ${username}`, true);
+        return;
+      }
+
+      if (text === 'agent orders') {
+        const current = orders.current();
+        bot.chat(
+          current === null
+            ? `${identity.username}: no standing orders.`
+            : `${identity.username}: "${current.text}" (from ${current.from})`,
+        );
+        return;
+      }
+
       if (text === 'agent status') {
         bot.chat(`${identity.username}: ${agent.cycles()} decisions, ${budget.summary()}`);
         return;

@@ -242,8 +242,33 @@ They appear on the dashboard map as labelled markers. See
 Agents hear what is said near them, know when a message names them, and can
 reply with `send_chat`.
 
-**From Minecraft** — just talk. Say `Alice, come here` and she is woken
-immediately rather than waiting for the next interval.
+**From Minecraft** — just talk. Anything a person says reaches every agent
+immediately, however it is phrased: they can tell people from agents (from
+`config/agents/`), and a person is the operator rather than another
+participant. Agents talking among themselves need a name or an explicit
+"everyone" to interrupt each other, which is what keeps four agents from
+waking each other in a loop.
+
+### Standing orders — making them obey until released
+
+Ordinary chat competes with whatever the agent had in mind, and `agent tell`
+lands once and is gone. Neither survives the agent deciding two turns later
+that its own goal is more interesting. A standing order does:
+
+| say in chat | effect |
+|---|---|
+| `agent obey come to me and stay put` | pinned at the top of every prompt, outranking the agent's goal, until lifted |
+| `agent release` | lifts it — back to its own judgement |
+| `agent orders` | what it is currently under, if anything |
+
+Staying alive is deliberately exempt: an agent that stands still while
+starving because it was told to stay put is obeying an instruction the
+operator did not mean.
+
+Orders are recorded in telemetry when given and when lifted, and every
+decision made under one is tagged. A run where the operator silently steered
+the agents is not a record of emergent behaviour, so analysis has to be able
+to carve out the stretch where they were not deciding for themselves.
 
 **From a terminal** — no need to launch the game:
 

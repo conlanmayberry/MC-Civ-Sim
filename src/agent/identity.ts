@@ -109,6 +109,29 @@ export function loadIdentity(file: string): AgentIdentity {
   };
 }
 
+/**
+ * Every username that belongs to an agent in this project.
+ *
+ * Used to tell agents apart from people. A human in the world is not just
+ * another speaker -- they are the operator, and an instruction from them
+ * carries weight that agent chatter does not.
+ */
+export function agentUsernames(): Set<string> {
+  if (!fs.existsSync(AGENTS_DIR)) return new Set();
+
+  const names = new Set<string>();
+  for (const file of fs.readdirSync(AGENTS_DIR)) {
+    if (!file.endsWith('.json')) continue;
+    try {
+      names.add(loadIdentity(path.join(AGENTS_DIR, file)).username);
+    } catch {
+      // A malformed config is the loader's problem to report when that agent
+      // is actually started, not a reason to fail everyone else's hearing.
+    }
+  }
+  return names;
+}
+
 export function loadIdentityById(agentId: string): AgentIdentity {
   const file = path.join(AGENTS_DIR, `${agentId}.json`);
   if (!fs.existsSync(file)) {

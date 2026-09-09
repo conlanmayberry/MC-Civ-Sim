@@ -31,14 +31,49 @@ describe('isDirectedAt', () => {
 
 describe('hearing', () => {
   test('records what was said, with who said it', () => {
-    const hearing = createHearing('Alice');
+    const hearing = createHearing('Alice', { agentNames: ['Alice', 'Bob'] });
     const message = hearing.hear('Bob', 'hello there', 5);
 
     assert.ok(message !== null);
     assert.equal(message.from, 'Bob');
     assert.equal(message.text, 'hello there');
     assert.equal(message.distance, 5);
-    assert.equal(message.directed, false);
+    assert.equal(message.directed, false, 'another agent, not naming Alice');
+    assert.equal(message.fromOperator, false);
+  });
+
+  test('another agent has to use a name to be addressing you', () => {
+    const hearing = createHearing('Alice', { agentNames: ['Alice', 'Bob'] });
+
+    assert.equal(hearing.hear('Bob', 'heading to the mine', null)?.directed, false);
+    assert.equal(hearing.hear('Bob', 'Alice, can you help', null)?.directed, true);
+  });
+
+  test('"everyone" addresses every one of them', () => {
+    // The regression this exists for: once only directed messages woke an
+    // agent, "Everyone, come to me" named nobody and so woke nobody -- the
+    // operator was talking to a room that had quietly stopped listening.
+    const hearing = createHearing('Alice', { agentNames: ['Alice', 'Bob'] });
+
+    assert.equal(hearing.hear('Bob', 'everyone come to the base', null)?.directed, true);
+    assert.equal(hearing.hear('Bob', 'all of you stay put', null)?.directed, true);
+  });
+
+  test('a person is always addressing you, however they phrase it', () => {
+    // A human here is the operator, not another participant. A rule aimed at
+    // agents chattering must not silence the person running the experiment.
+    const hearing = createHearing('Alice', { agentNames: ['Alice', 'Bob'] });
+    const message = hearing.hear('Cheeksmack56', 'come to me and stay put', 12);
+
+    assert.equal(message?.directed, true);
+    assert.equal(message?.fromOperator, true);
+  });
+
+  test('an unknown speaker is assumed to be a person', () => {
+    // Failing to hear the operator is a worse mistake than occasionally
+    // treating an agent as one, so this defaults towards listening.
+    const hearing = createHearing('Alice');
+    assert.equal(hearing.hear('SomeoneNew', 'hello', null)?.fromOperator, true);
   });
 
   test('an agent does not hear itself', () => {
@@ -97,13 +132,20 @@ describe('rendering for the prompt', () => {
   });
 
   test('directed messages are flagged so the agent notices', () => {
-    const hearing = createHearing('Alice');
+    const hearing = createHearing('Alice', { agentNames: ['Alice', 'Bob'] });
     hearing.hear('Bob', 'Alice can you help', 3);
     const rendered = describeHearing(hearing.recent()).join('\n');
 
     assert.match(rendered, /<Bob>/);
     assert.match(rendered, /3m away/);
-    assert.match(rendered, /names you/);
+    assert.match(rendered, /addressed to you/);
+  });
+
+  test('a person is marked as a person, which outranks a name', () => {
+    const hearing = createHearing('Alice', { agentNames: ['Alice', 'Bob'] });
+    hearing.hear('Cheeksmack56', 'everyone come here', 8);
+
+    assert.match(describeHearing(hearing.recent()).join('\n'), /a person said this to you/);
   });
 });
 
