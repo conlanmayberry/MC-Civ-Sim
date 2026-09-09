@@ -139,9 +139,12 @@ export const TOOL_SCHEMAS: readonly ToolSchema[] = [
       'You must be standing close together for this to actually reach them -- ' +
       'it is a normal drop, not a throw, so promising to give something and ' +
       'then staying where you are does not work. It drops the item near them, ' +
-      'not into their inventory directly -- it can scatter a little on landing, ' +
-      'so they may still need collect_items on their end. Fails with not_found ' +
-      'if you cannot see them right now.',
+      'not into their inventory directly, so they still need collect_items to ' +
+      'pick it up; they will see it named on the ground. Give the WHOLE amount ' +
+      'in one call rather than one at a time -- one drop they collect once ' +
+      'beats five drops rotting in a pile. If you can still see what you gave ' +
+      'lying on the ground, they have not picked it up yet, and dropping more ' +
+      'on top of it will not help. Fails with not_found if you cannot see them.',
     parameters: object({
       item: str('Item name, e.g. bread, spruce_planks.'),
       count: int('How many to give.'),

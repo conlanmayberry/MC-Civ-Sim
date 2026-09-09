@@ -49,12 +49,26 @@ export const DEFAULT_GIVE_TIMEOUT_MS = 12_000;
  * How close the giver must be before tossing.
  *
  * `bot.toss` is a window transaction, not a directional throw -- the item
- * appears at the GIVER'S feet, not carried toward the recipient. Vanilla item
- * pickup only reaches roughly a block, so this has to be tight enough that the
- * drop is actually within the recipient's reach, not just "nearby" by the
- * standard of place_block or mine_block.
+ * appears at the GIVER'S feet, not carried toward the recipient.
+ *
+ * This was 2, on the reasoning that vanilla pickup only reaches about a block,
+ * so the drop had to land essentially on top of the recipient. That was the
+ * wrong constraint: automatic pickup is not how these handovers complete.
+ * `collect_items` is, and its sweep covers a far wider radius than this. What
+ * the tight limit actually did was reject good arrivals -- refusals at 2.6m,
+ * 4.2m, 5.1m and 6.3m in a single session -- because the pathfinder stops
+ * where it is close enough for its own purposes rather than on a precise spot.
+ *
+ * So the requirement is now "close enough that the drop is obviously for you",
+ * and the recipient noticing it is handled where it belongs: by naming the
+ * stack in their observation (see droppedStack in observations.ts).
  */
-const GIVE_RANGE = 2;
+const GIVE_RANGE = 4;
+/**
+ * How close to ASK to get. Deliberately tighter than GIVE_RANGE so a
+ * pathfinder that overshoots slightly still lands inside the range that counts.
+ */
+const GIVE_APPROACH_RANGE = 2;
 
 /** The six neighbours of a block, with the face vector pointing back at it. */
 const FACES: Array<{ offset: Vec3; face: Vec3 }> = [
@@ -167,7 +181,7 @@ export function createSurviveActions(ctx: ActionContext) {
               target.position.x,
               target.position.y,
               target.position.z,
-              1,
+              GIVE_APPROACH_RANGE,
               Math.max(5_000, timeoutMs - 4_000),
               signal,
             );
@@ -215,7 +229,10 @@ export function createSurviveActions(ctx: ActionContext) {
             );
           }
 
-          await sleep(250);
+          // A touch longer than most waits here: the inventory update for a
+          // toss arrives as its own packet, and 250ms occasionally read as
+          // "dropping had no effect" for a drop that had in fact happened.
+          await sleep(400);
 
           // Verified by change, same as every other action here: this drops
           // the stack rather than confirming it was PICKED UP, since that

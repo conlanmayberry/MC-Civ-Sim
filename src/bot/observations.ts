@@ -72,6 +72,8 @@ export interface EntityObservation {
   position: Position;
   distance: number;
   health: number | null;
+  /** For a dropped stack: what it is and how much. Null for anything else. */
+  drop: { name: string; count: number } | null;
 }
 
 export interface EntitiesObservation {
@@ -168,8 +170,33 @@ export function observeInventory(bot: Bot): InventoryObservation {
   };
 }
 
+/**
+ * What a dropped stack actually is, or null if this is not one.
+ *
+ * Dropped items reached the agent as the bare word "Item", which is why
+ * handing something over so often failed to complete: the giver walked over,
+ * dropped bread at the recipient's feet, said so in chat -- and the recipient
+ * saw "Item at 1.2m" and had no reason to connect it with the bread it was
+ * waiting for. Measured over one session, 21 of 36 successful gives were never
+ * picked up.
+ */
+function droppedStack(entity: Entity): { name: string; count: number } | null {
+  if (entity.name !== 'item') return null;
+  try {
+    const stack = entity.getDroppedItem();
+    if (stack === null || stack === undefined) return null;
+    return { name: stack.name, count: stack.count };
+  } catch {
+    // Metadata can be absent while the entity is still spawning. An unnamed
+    // drop is worth less than a named one but still worth reporting.
+    return null;
+  }
+}
+
 /** Best available label for an entity, preferring the specific over the generic. */
 function entityName(entity: Entity): string {
+  const drop = droppedStack(entity);
+  if (drop !== null) return `${drop.count}x ${drop.name} (on the ground)`;
   return entity.username ?? entity.displayName ?? entity.name ?? entity.mobType ?? entity.type;
 }
 
@@ -193,14 +220,22 @@ export function observeEntities(bot: Bot, radius: number, limit: number): Entiti
       position: toPosition(entity.position),
       distance: round2(distance),
       health: entity.health ?? null,
+      drop: droppedStack(entity),
     });
   }
 
   found.sort((a, b) => a.distance - b.distance);
 
+  // People and dropped items are the two things an agent acts on; passive
+  // scenery is not. Reserving room for them stops eight sheep from hiding the
+  // bread somebody just dropped, which is the case that matters here.
+  const notable = found.filter((e) => e.username !== null || e.drop !== null);
+  const rest = found.filter((e) => e.username === null && e.drop === null);
+  const entities = [...notable, ...rest].slice(0, limit).sort((a, b) => a.distance - b.distance);
+
   return {
     radius,
-    entities: found.slice(0, limit),
+    entities,
     truncated: found.length > limit,
   };
 }

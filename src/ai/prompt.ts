@@ -138,6 +138,12 @@ export function buildSystemPrompt(identity: AgentIdentity): string {
     'things you cannot see for yourself. You can also speak first if you want',
     'something from someone.',
     '',
+    'Items lying on the ground are named for you, with what they are and how',
+    'many. If someone has dropped something for you it appears there -- pick it',
+    'up with collect_items rather than waiting to be handed it, because nobody',
+    'can put anything directly into your inventory. Anything left on the ground',
+    'disappears after a few minutes.',
+    '',
     'A promise to hand something over only becomes real through give_item, and',
     'that only reaches someone you are standing right next to -- it drops the',
     'item where you are, not where they are. Agreeing in chat to bring someone',
@@ -226,9 +232,22 @@ export function buildObservation(
           .join('; ')}.`,
   );
 
-  if (entities.entities.length > 0) {
+  // Dropped stacks get their own line rather than being buried in the entity
+  // list. They are the one kind of entity with an obvious action attached, and
+  // a handover only completes if the recipient notices and picks it up.
+  const drops = entities.entities.filter((e) => e.drop !== null);
+  const others = entities.entities.filter((e) => e.drop === null);
+
+  if (others.length > 0) {
+    lines.push(`Nearby: ${others.map((e) => `${e.name} at ${e.distance}m`).join(', ')}.`);
+  }
+
+  if (drops.length > 0) {
     lines.push(
-      `Nearby: ${entities.entities.map((e) => `${e.name} at ${e.distance}m`).join(', ')}.`,
+      `On the ground within reach: ${drops
+        .map((e) => `${e.drop?.count ?? 1}x ${e.drop?.name ?? 'item'} (${e.distance}m)`)
+        .join(', ')}. Use collect_items to pick these up -- items left on the ` +
+        'ground disappear after a few minutes.',
     );
   }
 
