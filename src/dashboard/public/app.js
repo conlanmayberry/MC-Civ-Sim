@@ -427,6 +427,22 @@ function renderActions(rows) {
 
 // ------------------------------------------------------------------- map
 
+/**
+ * A stable colour per agent.
+ *
+ * Hashed from the id rather than assigned by position, so an agent keeps its
+ * colour when another one starts or stops -- a legend that reshuffles itself
+ * is worse than no legend.
+ */
+const AGENT_COLOURS = ['#6fb2e8', '#e8a24a', '#b98ce0', '#5fc9a8', '#e0687a', '#d7d06a'];
+
+function agentColour(agentId) {
+  if (!agentId) return '#ffffff';
+  let hash = 0;
+  for (let i = 0; i < agentId.length; i++) hash = (hash * 31 + agentId.charCodeAt(i)) >>> 0;
+  return AGENT_COLOURS[hash % AGENT_COLOURS.length];
+}
+
 function renderMap() {
   const canvas = ui.map;
   const ctx = canvas.getContext('2d');
@@ -446,7 +462,12 @@ function renderMap() {
   }
 
   const span = map.radius * 2 + 1;
+  // Pixels per BLOCK. Tiles may sample every Nth block at wide radii (see
+  // observeMapTiles), so a tile is drawn step blocks wide -- otherwise a
+  // downsampled map renders as a grid of gaps.
   const cell = size / span;
+  const step = Math.max(1, map.step ?? 1);
+  const tilePx = cell * step;
   const centreY = map.centre.y;
 
   // Terrain
@@ -454,14 +475,18 @@ function renderMap() {
     const base = blockColour(t.name);
     if (base === null) continue;
     // Height shading: higher ground lighter. Without it a forest floor and a
-    // hilltop look identical and the map reads flat.
+    // hilltop look identical and the map reads flat. Widened from the old
+    // +/-0.22 because at a wider radius the map spans real hills, and the
+    // gentler ramp made everything the same mid-grey.
     const dy = t.y === null ? 0 : t.y - centreY;
-    ctx.fillStyle = shade(base, Math.max(-0.22, Math.min(0.22, dy * 0.03)));
+    ctx.fillStyle = shade(base, Math.max(-0.34, Math.min(0.34, dy * 0.035)));
     ctx.fillRect(
       Math.floor((t.dx + map.radius) * cell),
       Math.floor((t.dz + map.radius) * cell),
-      Math.ceil(cell),
-      Math.ceil(cell),
+      // +1 so neighbouring tiles overlap by a pixel. Rounding each edge
+      // independently otherwise leaves hairline seams that read as a grid.
+      Math.ceil(tilePx) + 1,
+      Math.ceil(tilePx) + 1,
     );
   }
 
@@ -506,7 +531,7 @@ function renderMap() {
       if (px < -cell || pz < -cell || px > size + cell || pz > size + cell) continue;
       ctx.fillStyle =
         m.eventType === 'block_placed' ? '#d8a531' : m.eventType === 'death' ? '#c4553d' : '#8fb7d6';
-      const r = Math.max(1.5, cell * 0.2);
+      const r = Math.max(1.6, Math.min(3.5, cell * 0.2));
       ctx.beginPath();
       ctx.arc(px, pz, r, 0, Math.PI * 2);
       ctx.fill();
@@ -520,7 +545,7 @@ function renderMap() {
     const [px, pz] = toPx(place.x, place.z);
     if (px < 0 || pz < 0 || px > size || pz > size) continue;
 
-    const r = Math.max(4, cell * 0.42);
+    const r = Math.max(5, Math.min(9, cell * 0.42));
     ctx.save();
     ctx.translate(px, pz);
 
@@ -536,41 +561,112 @@ function renderMap() {
     ctx.fill();
     ctx.stroke();
 
+    // Below ~4px a block, a dozen labels overlap into an unreadable smear --
+    // the marker still shows where the place is, which is the part that matters.
+    if (cell >= 4) {
+      ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#14171acc';
+      ctx.strokeText(place.name, 0, -r - 4);
+      ctx.fillStyle = '#e8e6dc';
+      ctx.fillText(place.name, 0, -r - 4);
+    }
+    ctx.restore();
+  }
+
+  // Everyone on the map, not only the one being watched.
+  //
+  // The map used to draw a single white arrow at the centre and nothing else,
+  // so with four agents in one world you could not see where anybody was in
+  // relation to anybody -- which is most of what a map of a group is for.
+  // Marker size is in PIXELS rather than blocks: scaling it off the cell size
+  // made the agents shrink to specks exactly when the view was wide enough to
+  // need them.
+  const others = (state.agents ?? []).filter(
+    (a) => a.agentId !== state.selected && a.self && Number.isFinite(a.self.x),
+  );
+
+  for (const other of others) {
+    const [px, pz] = toPx(other.self.x, other.self.z);
+    const colour = agentColour(other.agentId);
+
+    // Off-screen agents are pinned to the edge rather than dropped: "Carla is
+    // somewhere north of here" is worth more than her silently not existing.
+    const edge = 12;
+    const clamped = px < edge || pz < edge || px > size - edge || pz > size - edge;
+    const ax = Math.max(edge, Math.min(size - edge, px));
+    const az = Math.max(edge, Math.min(size - edge, pz));
+
+    ctx.save();
+    ctx.translate(ax, az);
+    ctx.globalAlpha = clamped ? 0.55 : 1;
+
+    ctx.beginPath();
+    ctx.arc(0, 0, 6, 0, Math.PI * 2);
+    ctx.fillStyle = colour;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#14171a';
+    ctx.stroke();
+
+    ctx.globalAlpha = 1;
     ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.lineWidth = 3;
     ctx.strokeStyle = '#14171acc';
-    ctx.strokeText(place.name, 0, -r - 4);
-    ctx.fillStyle = '#e8e6dc';
-    ctx.fillText(place.name, 0, -r - 4);
+    const label = clamped ? `${other.username} →` : other.username;
+    ctx.strokeText(label, 0, -10);
+    ctx.fillStyle = colour;
+    ctx.fillText(label, 0, -10);
     ctx.restore();
   }
 
-  // The agent, with a facing wedge
+  // The agent being watched, with a facing wedge. Drawn last so it is never
+  // hidden behind somebody standing on the same spot.
   const [cx, cz] = toPx(map.centre.x, map.centre.z);
   const yaw = state.live?.self?.yaw ?? 0;
+  const own = agentColour(state.selected);
+
   ctx.save();
   ctx.translate(cx, cz);
-  // Minecraft yaw 0 faces +z; canvas +y is down, which is +z here.
-  ctx.rotate(-yaw);
-  ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = '#00000066';
+  ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(0, cell * 0.9);
-  ctx.lineTo(-cell * 0.55, -cell * 0.6);
-  ctx.lineTo(cell * 0.55, -cell * 0.6);
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-
-  ctx.strokeStyle = '#000000aa';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.arc(cx, cz, Math.max(3, cell * 0.7), 0, Math.PI * 2);
+  ctx.arc(0, 0, 11, 0, Math.PI * 2);
   ctx.stroke();
 
+  ctx.rotate(-yaw);
+  // Minecraft yaw 0 faces +z; canvas +y is down, which is +z here.
+  ctx.beginPath();
+  ctx.moveTo(0, 11);
+  ctx.lineTo(-7, -7);
+  ctx.lineTo(0, -3);
+  ctx.lineTo(7, -7);
+  ctx.closePath();
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = own;
+  ctx.stroke();
+  ctx.restore();
+
+  if (state.live?.username) {
+    ctx.save();
+    ctx.font = '700 12px ui-sans-serif, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.lineWidth = 3.5;
+    ctx.strokeStyle = '#14171acc';
+    ctx.strokeText(state.live.username, cx, cz - 15);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(state.live.username, cx, cz - 15);
+    ctx.restore();
+  }
+
+  const detail = step > 1 ? ` · 1 px per ${step} blocks` : '';
   ui.mapReadout.textContent =
     `centre ${map.centre.x}, ${map.centre.z}\n` +
-    `${span}x${span} blocks · y ${centreY}`;
+    `${span}x${span} blocks · y ${centreY}${detail}`;
 }
 
 function renderLegend() {

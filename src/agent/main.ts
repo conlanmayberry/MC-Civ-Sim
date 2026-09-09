@@ -302,9 +302,9 @@ session = connect(
                 startedAt: startedAt,
               };
             },
-            map: (radius) => {
+            map: (radius, step) => {
               try {
-                return bot.entity === undefined ? null : observeMapTiles(bot, radius);
+                return bot.entity === undefined ? null : observeMapTiles(bot, radius, 24, step);
               } catch {
                 return null;
               }

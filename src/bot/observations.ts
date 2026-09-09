@@ -412,6 +412,12 @@ export interface MapTile {
 export interface MapView {
   centre: Position;
   radius: number;
+  /**
+   * Blocks per tile. 1 is every column; 2 means each tile samples one column
+   * and stands for a 2x2 area. Lets the view widen without the scan cost
+   * growing with it -- see observeMapTiles.
+   */
+  step: number;
   tiles: MapTile[];
 }
 
@@ -423,24 +429,27 @@ export interface MapView {
  * answers "what resources are near me" for an agent, this answers "what does
  * this place look like" for a human. Merging them would make both worse.
  *
- * Cost is one column scan per tile, so the radius matters -- 20 gives a 41x41
- * grid. The dashboard polls this far less often than live state for that
- * reason.
+ * Cost is one column scan per tile, and the tile count is quadratic in radius
+ * -- which is why `step` exists. A wider view samples every Nth column rather
+ * than every one, so seeing twice as far costs the same as seeing half as far
+ * in detail. This runs in the agent's own process, so an unbounded scan would
+ * not merely be slow: it would stall the bot mid-action.
  *
  * Still only what the bot knows: unloaded columns come back as null rather than
  * being filled in from the server's world. The map shows what the agent could
  * see, not the truth (ADR-005).
  */
-export function observeMapTiles(bot: Bot, radius = 20, depth = 24): MapView {
+export function observeMapTiles(bot: Bot, radius = 20, depth = 24, step = 1): MapView {
   const origin = bot.entity.position;
   const originX = Math.floor(origin.x);
   const originY = Math.floor(origin.y);
   const originZ = Math.floor(origin.z);
 
+  const stride = Math.max(1, Math.trunc(step));
   const tiles: MapTile[] = [];
 
-  for (let dx = -radius; dx <= radius; dx++) {
-    for (let dz = -radius; dz <= radius; dz++) {
+  for (let dx = -radius; dx <= radius; dx += stride) {
+    for (let dz = -radius; dz <= radius; dz += stride) {
       let found: MapTile = { dx, dz, name: null, y: null };
 
       // Scan down from above the bot: the first solid thing is the surface.
@@ -459,6 +468,7 @@ export function observeMapTiles(bot: Bot, radius = 20, depth = 24): MapView {
   return {
     centre: toPosition(origin),
     radius,
+    step: stride,
     tiles,
   };
 }

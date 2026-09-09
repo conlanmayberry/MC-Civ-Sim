@@ -20,6 +20,26 @@ import http from 'node:http';
 import type { Logger } from '../util/log.ts';
 
 export const DEFAULT_CONTROL_PORT = 25580;
+
+/**
+ * How far the map can be asked to see.
+ *
+ * This scan runs inside the agent's own process, so an unbounded one would
+ * stall the bot mid-action rather than merely being slow.
+ */
+export const MAX_MAP_RADIUS = 128;
+/** Up to here every column is sampled; past it, detail is traded for reach. */
+export const MAP_FULL_DETAIL_RADIUS = 40;
+
+/**
+ * Blocks per sampled column for a given radius.
+ *
+ * Keeps the tile count near what radius 40 costs at full detail (~6.7k
+ * columns), so widening the view does not make the agent stutter.
+ */
+export function mapStepFor(radius: number): number {
+  return Math.max(1, Math.ceil(radius / MAP_FULL_DETAIL_RADIUS));
+}
 const HOST = '127.0.0.1';
 /** Refuse absurd bodies rather than buffering them. */
 const MAX_BODY_BYTES = 8 * 1024;
@@ -55,7 +75,7 @@ export interface ControlHandlers {
   inject: (from: string, text: string) => boolean;
   state: () => ControlState;
   /** Top-down surface view. Expensive, so the dashboard polls it rarely. */
-  map: (radius: number) => unknown;
+  map: (radius: number, step: number) => unknown;
   stop: (reason: string) => void;
 }
 
@@ -105,12 +125,14 @@ export function startControlServer(
 
         if (req.method === 'GET' && url.pathname === '/map') {
           const requested = Number(url.searchParams.get('radius') ?? '20');
-          // Cost is quadratic in radius, so cap it rather than trusting the
-          // caller -- a stray ?radius=500 would freeze the agent.
+          // Still capped -- a stray ?radius=5000 must not freeze the agent --
+          // but the ceiling can be generous now that detail is decoupled from
+          // extent: beyond MAP_FULL_DETAIL_RADIUS the scan samples every Nth
+          // column, so the work stays flat while the view keeps widening.
           const radius = Number.isFinite(requested)
-            ? Math.max(4, Math.min(40, Math.trunc(requested)))
+            ? Math.max(4, Math.min(MAX_MAP_RADIUS, Math.trunc(requested)))
             : 20;
-          json(res, 200, handlers.map(radius));
+          json(res, 200, handlers.map(radius, mapStepFor(radius)));
           return;
         }
 
