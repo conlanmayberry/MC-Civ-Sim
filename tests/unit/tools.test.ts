@@ -246,11 +246,28 @@ describe('tool dispatch', () => {
 
   test('send_chat routes to chat rather than to an action', async () => {
     const said: string[] = [];
-    const result = await invokeTool(stubActions([]), (m) => said.push(m), 'send_chat', {
-      message: 'hello',
-    });
+    const result = await invokeTool(
+      stubActions([]),
+      (m) => {
+        said.push(m);
+      },
+      'send_chat',
+      { message: 'hello' },
+    );
     assert.equal(result.ok, true);
     assert.deepEqual(said, ['hello']);
+  });
+
+  test('a refused message comes back as a result the model can read', async () => {
+    // Chat is rate-limited (agent/voice.ts). A refusal has to be visible to
+    // the model, or it believes it said something it never said.
+    const result = await invokeTool(stubActions([]), () => false, 'send_chat', {
+      message: 'hello',
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error?.code, 'blocked');
+    assert.match(result.error?.message ?? '', /messages for this minute/);
   });
 });
 

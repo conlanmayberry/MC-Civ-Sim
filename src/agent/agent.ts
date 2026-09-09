@@ -32,6 +32,7 @@ import type { Inbox } from './inbox.ts';
 import type { Hearing } from './hearing.ts';
 import type { Places } from './places.ts';
 import { createSetbacks } from './setbacks.ts';
+import { createVoice } from './voice.ts';
 import { createWaker } from './waker.ts';
 
 export interface AgentOptions {
@@ -208,6 +209,9 @@ export function createAgent(options: AgentOptions): Agent {
   // What has already been tried and refused, so a failure survives longer than
   // the six-turn history window that let one placement be retried 110 times.
   const setbacks = createSetbacks();
+  // Chat was free while every physical act cost seconds, so the cheapest way
+  // to look busy was always to say something. This gives talking a price.
+  const voice = createVoice();
 
   function nudge(reason: string, urgent = false): void {
     waker.nudge(reason, urgent);
@@ -256,6 +260,7 @@ export function createAgent(options: AgentOptions): Agent {
       goal,
       places: places.all(),
       setbacks: setbacks.all(cycle),
+      voice: voice.describe(),
     });
 
     // Timed because thinking is dead air: the agent stands still for it, and
@@ -332,10 +337,19 @@ export function createAgent(options: AgentOptions): Agent {
       const result = await invokeTool(
         actions,
         (message) => {
+          if (!voice.trySpeak()) {
+            log.event('observation', {
+              note: 'chat withheld -- allowance spent',
+              message,
+              cycle,
+            });
+            return false;
+          }
           bot.chat(message);
           // Record it: the agent does not hear itself, so without this its own
           // replies exist nowhere and every conversation reads one-sided.
           log.event('chat_sent', { message, cycle });
+          return true;
         },
         call.name,
         call.args,

@@ -181,7 +181,9 @@ export const TOOL_SCHEMAS: readonly ToolSchema[] = [
     name: 'send_chat',
     description:
       'Say something in Minecraft chat. Other players and agents will see it. ' +
-      'Use this to communicate, not to think out loud.',
+      'Use this to communicate, not to think out loud. You get only a few ' +
+      'messages a minute, so say things the others could not work out for ' +
+      'themselves -- announcing what you are about to do is usually not one.',
     parameters: object({
       message: str('What to say. Keep it under 200 characters.'),
     }),
@@ -221,7 +223,7 @@ type EquipDestination = (typeof EQUIP_DESTINATIONS)[number];
  */
 export async function invokeTool(
   actions: Actions,
-  sendChat: (message: string) => void,
+  sendChat: (message: string) => boolean | void,
   name: string,
   args: Record<string, unknown>,
   setGoal: (goal: string) => boolean | void = () => {},
@@ -353,7 +355,22 @@ export async function invokeTool(
 
       case 'send_chat': {
         const message = reqStr(args['message'], 'message');
-        sendChat(message);
+        // A refusal is a normal failed result, not an exception: the model
+        // sees it, and seeing "you are out of messages" is what teaches it to
+        // spend the next one on something worth saying.
+        if (sendChat(message) === false) {
+          return {
+            ok: false,
+            action: 'send_chat',
+            durationMs: 0,
+            detail: { message },
+            error: {
+              code: 'blocked',
+              message:
+                'you have used your messages for this minute -- say nothing for now and act instead',
+            },
+          };
+        }
         return { ok: true, action: 'send_chat', durationMs: 0, detail: { message } };
       }
 

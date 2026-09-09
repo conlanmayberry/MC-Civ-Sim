@@ -35,8 +35,29 @@ import { describePlaces } from '../agent/places.ts';
 import type { Setback } from '../agent/setbacks.ts';
 import { describeSetbacks } from '../agent/setbacks.ts';
 
-/** How many past cycles the model is reminded of. */
-export const HISTORY_WINDOW = 6;
+/**
+ * How many past cycles the model is reminded of.
+ *
+ * COUNTED IN TURNS, SPENT IN SECONDS -- and that gap is why coordination
+ * kept failing. Six turns sounds generous; measured live it was 35-44
+ * seconds of wall-clock memory, because turns had quietly sped up to a
+ * median of six seconds each (chat woke agents constantly, and the no-op
+ * fast retry shortened the rest).
+ *
+ * Everything these agents coordinate about takes longer than that. Walking
+ * 200m takes over a minute. So an agent could agree to bring someone food
+ * and have the turn where it agreed fall out of memory before it arrived --
+ * not through poor reasoning, but because the commitment no longer existed
+ * anywhere it could see. Then it re-asked, which produced more chat, which
+ * woke everyone again, which made turns faster still.
+ *
+ * Raised, and the two changes that slow turns back down (only being
+ * addressed wakes an agent; chat is rationed) widen it further in real time
+ * without costing another token. The real fix for commitments that outlive
+ * any window is durable shared state, which is Stage 7's job -- this is the
+ * cheap part.
+ */
+export const HISTORY_WINDOW = 14;
 
 const BLOCK_RADIUS = 12;
 const ENTITY_RADIUS = 24;
@@ -140,6 +161,8 @@ export interface ObservationContext {
   places?: readonly Place[];
   /** Attempts already known not to work -- see agent/setbacks.ts. */
   setbacks?: readonly Setback[];
+  /** How much of its chat allowance is left -- see agent/voice.ts. */
+  voice?: readonly string[];
 }
 
 /** A compact, readable snapshot. JSON would cost more tokens and read worse. */
@@ -148,7 +171,7 @@ export function buildObservation(
   cycle: number,
   context: ObservationContext = {},
 ): string {
-  const { heard = [], goal = null, places = [], setbacks = [] } = context;
+  const { heard = [], goal = null, places = [], setbacks = [], voice = [] } = context;
   const self = observeSelf(bot);
   const inventory = observeInventory(bot);
   const entities = observeEntities(bot, ENTITY_RADIUS, MAX_ENTITIES);
@@ -232,6 +255,7 @@ export function buildObservation(
   // without this a failure from eight turns ago is simply gone -- which is how
   // one placement came to be attempted 110 times across seven runs.
   lines.push(...describeSetbacks(setbacks));
+  lines.push(...voice);
 
   // Surface the pressures worth reacting to, without prescribing a reaction.
   const pressures: string[] = [];
