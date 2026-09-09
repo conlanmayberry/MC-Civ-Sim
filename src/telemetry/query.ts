@@ -8,6 +8,7 @@
  *     npm run telemetry inventory       state snapshots over time
  *     npm run telemetry errors          what failed, and why
  *     npm run telemetry latency [all]   how long the agent takes to respond
+ *     npm run telemetry compare [all]   agents side by side: cost, work, talk
  *     npm run telemetry sql "SELECT..." anything else
  *
  * The subcommands exist to answer the six questions the project brief sets as
@@ -349,6 +350,128 @@ switch (subcommand) {
     break;
   }
 
+  case 'compare': {
+    // Agents side by side.
+    //
+    // Exists for the question you cannot answer by looking at the world: with
+    // one agent on a stronger model and the rest as a control, "is it actually
+    // better" needs the same numbers for each of them, from the same window,
+    // or it is just an impression. Defaults to the newest run per agent, since
+    // that is the current experiment rather than the whole history.
+    const scope = args[0] ?? 'last';
+
+    const agents = query(
+      `SELECT DISTINCT agent_id FROM events WHERE agent_id IS NOT NULL`,
+    ).map((r) => String(r['agent_id']));
+
+    if (agents.length === 0) {
+      console.log(`  ${DIM}(no agents have run yet)${RESET}`);
+      break;
+    }
+
+    const rows: Row[] = [];
+
+    for (const agentId of agents) {
+      // One run each, or everything the agent has ever done.
+      const runs =
+        scope === 'all'
+          ? query(`SELECT DISTINCT run_id FROM events WHERE agent_id = ?`, agentId).map((r) =>
+              String(r['run_id']),
+            )
+          : query(
+              `SELECT run_id FROM events WHERE agent_id = ? ORDER BY id DESC LIMIT 1`,
+              agentId,
+            ).map((r) => String(r['run_id']));
+
+      if (runs.length === 0) continue;
+      const holes = runs.map(() => '?').join(', ');
+
+      const decisions = query(
+        `SELECT timestamp, duration_ms,
+                json_extract(data,'$.costUsd') AS cost,
+                json_extract(data,'$.model')   AS model,
+                json_extract(data,'$.trigger') AS trigger
+         FROM events
+         WHERE agent_id = ? AND event_type = 'decision' AND run_id IN (${holes})
+         ORDER BY id`,
+        agentId, ...runs,
+      );
+
+      if (decisions.length === 0) continue;
+
+      const first = Date.parse(String(decisions[0]?.['timestamp']));
+      const last = Date.parse(String(decisions.at(-1)?.['timestamp']));
+      const hours = Math.max((last - first) / 3_600_000, 1 / 3_600_000);
+
+      const spend = decisions.reduce((sum, d) => sum + Number(d['cost'] ?? 0), 0);
+      const think = decisions
+        .map((d) => Number(d['duration_ms']))
+        .filter((n) => Number.isFinite(n) && n > 0);
+
+      const count = (sql: string, ...params: unknown[]): number =>
+        Number(query(sql, ...params)[0]?.['n'] ?? 0);
+
+      const acted = count(
+        `SELECT COUNT(*) n FROM events WHERE agent_id = ? AND action IS NOT NULL AND run_id IN (${holes})`,
+        agentId, ...runs,
+      );
+      const actedOk = count(
+        `SELECT COUNT(*) n FROM events WHERE agent_id = ? AND ok = 1 AND action IS NOT NULL AND run_id IN (${holes})`,
+        agentId, ...runs,
+      );
+
+      // Placements are the closest thing to "did it build", and completed
+      // structures are not something the database knows -- so this is a proxy,
+      // and an honest one only alongside actually looking at the world.
+      const placed = count(
+        `SELECT COUNT(*) n FROM events WHERE agent_id = ? AND event_type = 'block_placed' AND ok = 1 AND run_id IN (${holes})`,
+        agentId, ...runs,
+      );
+
+      rows.push({
+        agent: agentId,
+        model: String(decisions[0]?.['model'] ?? '?').replace(/^gpt-/, ''),
+        mins: (hours * 60).toFixed(0),
+        turns: decisions.length,
+        'turns/h': Math.round(decisions.length / hours),
+        think_p50: think.length === 0 ? '' : secs(percentile(think, 50)),
+        acted,
+        'act%': acted === 0 ? '' : Math.round((100 * actedOk) / acted),
+        placed,
+        said: count(
+          `SELECT COUNT(*) n FROM events WHERE agent_id = ? AND event_type = 'chat_sent' AND run_id IN (${holes})`,
+          agentId, ...runs,
+        ),
+        died: count(
+          `SELECT COUNT(*) n FROM events WHERE agent_id = ? AND event_type = 'death' AND run_id IN (${holes})`,
+          agentId, ...runs,
+        ),
+        places: count(
+          `SELECT COUNT(DISTINCT json_extract(data,'$.name')) n FROM events
+           WHERE agent_id = ? AND event_type = 'place_remembered' AND run_id IN (${holes})`,
+          agentId, ...runs,
+        ),
+        usd: spend.toFixed(4),
+        'usd/h': (spend / hours).toFixed(2),
+      });
+    }
+
+    console.log(
+      `${BOLD}  Agents side by side${RESET} ` +
+        `${DIM}${scope === 'all' ? 'every run' : 'each agent\'s most recent run'}${RESET}`,
+    );
+    table(rows.sort((a, b) => String(a['agent']).localeCompare(String(b['agent']))));
+
+    console.log('');
+    console.log(
+      `  ${DIM}placed = successful block placements, a PROXY for building: the database` +
+        ` cannot see whether\n  anything was finished or whether it looks like anything.` +
+        ` Read it next to the world, not instead of it.${RESET}`,
+    );
+
+    break;
+  }
+
   case 'sql': {
     const sql = args.join(' ');
     if (sql === '') {
@@ -368,7 +491,7 @@ switch (subcommand) {
   default:
     console.error(`  Unknown subcommand "${subcommand}".`);
     console.error(
-      `  ${DIM}summary | timeline [n] | actions | errors | inventory | latency [all] | sql "..."${RESET}`,
+      `  ${DIM}summary | timeline [n] | actions | errors | inventory | latency [all] | compare [all] | sql "..."${RESET}`,
     );
     process.exit(1);
 }

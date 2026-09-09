@@ -285,6 +285,7 @@ session = connect(
                 username: identity.username,
                 description: identity.description,
                 traits: identity.traits,
+                role: identity.role,
                 interests: identity.interests,
                 values: identity.values,
                 cycles: agent.cycles(),

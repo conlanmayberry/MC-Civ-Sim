@@ -269,6 +269,43 @@ body {
   letter-spacing: -0.01em;
 }
 
+/* Role and model: the two things that differ deliberately between agents. */
+.identity .role {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.identity .role-job {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent, #7fc7a4);
+  text-transform: capitalize;
+}
+
+.identity .role-detail {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-dim);
+}
+
+.identity .role-none {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--ink-dim);
+}
+
+.identity .model {
+  margin-top: 6px;
+  display: inline-block;
+  font: 11px/1 var(--mono);
+  color: var(--ink-dim);
+  border: 1px solid var(--rule, #2a2f35);
+  border-radius: 4px;
+  padding: 3px 6px;
+}
+
 .identity .desc {
   color: var(--ink-dim);
   margin: 6px 0 12px;
@@ -778,4 +815,15 @@ button:disabled {
   * {
     transition-duration: 0.01ms !important;
   }
+}
+
+/* "You are looking at an agent running code you have since changed." */
+.stale {
+  font-size: 11px;
+  font-weight: 600;
+  color: #1c1204;
+  background: var(--warn, #d8a531);
+  border-radius: 999px;
+  padding: 4px 10px;
+  margin-right: 8px;
 }

@@ -22,6 +22,7 @@ const ui = {
   tabs: el('agent-tabs'),
   conn: el('conn'),
   identity: el('identity'),
+  stale: el('stale'),
   goal: el('goal'),
   vitals: el('vitals'),
   budget: el('budget'),
@@ -216,6 +217,35 @@ function select(agentId, port) {
 
 // -------------------------------------------------------------- rendering
 
+/**
+ * Warn when an agent has been running since before the code changed.
+ *
+ * A running Node process does not reload edited source. This cost real
+ * confusion four separate times: a fix was made, behaviour did not change,
+ * and nothing anywhere said the agent was still executing the old code.
+ */
+function renderStaleness(s) {
+  const el = ui.stale;
+  if (!el) return;
+
+  if (!s || !s.startedAt || !state.codeChangedAt) {
+    el.hidden = true;
+    return;
+  }
+
+  const started = Date.parse(s.startedAt);
+  const changed = Date.parse(state.codeChangedAt);
+  if (!Number.isFinite(started) || !Number.isFinite(changed) || changed <= started) {
+    el.hidden = true;
+    return;
+  }
+
+  const mins = Math.round((Date.now() - changed) / 60000);
+  const ago = mins < 1 ? 'moments ago' : mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
+  el.textContent = `running old code — source changed ${ago}, restart to pick it up`;
+  el.hidden = false;
+}
+
 function renderIdentity(s) {
   if (!s) {
     ui.identity.innerHTML = `<p class="empty">This agent is not running. History is still shown below.</p>`;
@@ -235,8 +265,19 @@ function renderIdentity(s) {
           .join('')}</div>`
       : '';
 
+  // Role and model sit right under the name because they are the two things
+  // that differ deliberately between agents -- with one agent on a stronger
+  // model as a trial, "which one am I looking at" has to be answerable at a
+  // glance or the comparison is guesswork.
+  const roleLine = s.role
+    ? `<div class="role"><span class="role-job">${esc(String(s.role).split(' -- ')[0])}</span>` +
+      `<span class="role-detail">${esc(String(s.role).split(' -- ').slice(1).join(' -- '))}</span></div>`
+    : '<div class="role role-none">no assigned role — behaviour left to emerge</div>';
+
   ui.identity.innerHTML = `
     <div class="name">${esc(s.username)}</div>
+    ${roleLine}
+    ${s.model ? `<div class="model">${esc(s.model)}</div>` : ''}
     ${s.description ? `<p class="desc">${esc(s.description)}</p>` : ''}
     ${tagRow('Traits', s.traits, 'trait')}
     ${tagRow('Interests', s.interests, 'interest')}
@@ -557,6 +598,7 @@ async function refreshState() {
     const data = await getJson('/api/agents');
     state.agents = data.agents ?? [];
     state.known = data.known ?? [];
+    state.codeChangedAt = data.codeChangedAt ?? null;
     state.failures = 0;
 
     if (state.selected === null && state.agents.length > 0) {
@@ -576,6 +618,7 @@ async function refreshState() {
     ui.conn.textContent = live ? 'live' : state.agents.length ? 'other agent' : 'no agent';
 
     renderIdentity(live);
+    renderStaleness(live);
     renderInventory(live);
     ui.talkSend.disabled = live === null;
   } catch {

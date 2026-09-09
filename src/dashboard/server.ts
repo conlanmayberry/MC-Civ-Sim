@@ -138,6 +138,40 @@ function query(sql: string, params: unknown[] = []): Array<Record<string, unknow
   );
 }
 
+/**
+ * When any source file was last modified.
+ *
+ * Cheap enough to do per request (a few dozen stats) and always current,
+ * which matters more here than speed: a stale answer would defeat the point.
+ */
+function newestSourceMtime(): string | null {
+  let newest = 0;
+
+  const walk = (dir: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.name.endsWith('.ts')) {
+        try {
+          newest = Math.max(newest, fs.statSync(full).mtimeMs);
+        } catch {
+          /* a file removed mid-walk is not worth failing the request over */
+        }
+      }
+    }
+  };
+
+  walk(path.join(ROOT, 'src'));
+  return newest === 0 ? null : new Date(newest).toISOString();
+}
+
 // --- routes ------------------------------------------------------------------
 
 async function handleApi(
@@ -151,6 +185,12 @@ async function handleApi(
     const agents = await findAgents();
     json(res, 200, {
       agents: agents.map((a) => ({ port: a.port, ...a.state })),
+      // When the source last changed, so the dashboard can say that a running
+      // agent predates it. A running Node process does not reload edited
+      // source, which cost real confusion four separate times in one session:
+      // changes were made, behaviour did not change, and nothing anywhere
+      // said the agent was still executing the old code.
+      codeChangedAt: newestSourceMtime(),
       // Agents that have run before but are not answering now. Being able to
       // inspect a finished run is half the point of the telemetry.
       known: query(

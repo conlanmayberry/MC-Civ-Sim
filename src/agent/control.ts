@@ -31,6 +31,8 @@ export interface ControlState {
   traits: string[];
   interests: string[];
   values: string[];
+  /** Assigned job, or null when behaviour is left to emerge. */
+  role: string | null;
   cycles: number;
   goal: string | null;
   spentUsd: number;

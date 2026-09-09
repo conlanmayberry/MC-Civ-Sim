@@ -99,6 +99,13 @@ version must match the server exactly.
 | `dashboard.bat` | open the web dashboard |
 | `response-times.bat` | how long the agent takes to answer; pass `all` to compare runs |
 
+`npm run telemetry compare` puts the agents side by side — turns, think time,
+action success rate, blocks placed, messages sent, deaths, spend per hour —
+which is how you tell whether a model upgrade on one agent actually bought
+anything. `placed` is a proxy for building: the database cannot see whether a
+structure was finished or whether it looks like anything, so read it next to
+the world rather than instead of it.
+
 They change to the project directory themselves and install dependencies on
 first run, so they work from anywhere.
 
