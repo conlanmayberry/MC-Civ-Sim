@@ -47,3 +47,7 @@ STOP
 # Mindcraft, kept beside the project as a reference implementation only.
 # See ADR-011: we borrow the idea of a place memory, not the runtime.
 mindcraft-develop/
+
+# Harness output: replay and scenario reports are regenerated per run.
+data/replays/
+data/scenarios/
