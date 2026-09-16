@@ -55,6 +55,16 @@ export interface AgentOptions {
    * made. This is what replay re-runs later -- see src/replay.
    */
   recordInput?: (input: DecisionInput) => void;
+  /**
+   * Where this agent's speech goes. Defaults to Minecraft chat.
+   *
+   * Overridden by scenario tests, and for a reason worth stating: chat is
+   * global, and a test agent's name is not in config/agents/, so anything it
+   * said in the shared world would reach the real agents as a PERSON -- with
+   * the authority to give them standing orders. Scenarios route speech
+   * privately between their own agents instead.
+   */
+  say?: (message: string) => void;
 }
 
 /** Everything a decision is a function of, besides the system prompt and tools. */
@@ -414,7 +424,8 @@ export function createAgent(options: AgentOptions): Agent {
                   });
                   return false;
                 }
-                bot.chat(message);
+                if (options.say !== undefined) options.say(message);
+                else bot.chat(message);
                 // Record it: the agent does not hear itself, so without this its
                 // own replies exist nowhere and every conversation reads one-sided.
                 log.event('chat_sent', { message, cycle });

@@ -189,7 +189,10 @@ server.on('error', (err) => {
 });
 
 server.on('exit', (code, signal) => {
-  process.stdin.unref();
+  // Optional call: only a TTY has unref. Launched from a script -- as the
+  // scenario harness does -- stdin is a pipe, and this line crashed the
+  // shutdown with a TypeError after the world had already saved.
+  process.stdin.unref?.();
   console.log(`\n  Server exited (code ${code ?? 'null'}${signal ? `, signal ${signal}` : ''}).`);
   process.exit(code ?? 0);
 });

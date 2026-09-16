@@ -667,3 +667,65 @@ reference and not a dependency:
   means.
 
 The idea worth borrowing is theirs, and it is borrowed. The runtime is not.
+
+---
+
+## ADR-012 — A reliability harness before more features
+
+**Date:** 2026-09-16 (Stage 5)
+**Status:** accepted
+
+Four pieces: run manifests, recorded decision inputs with replay, a doctor, and
+scenario tests on a resettable arena.
+
+### The problem
+
+Nearly every serious bug in this project was found the same way: play a session,
+then query telemetry by hand until a pattern showed. That loop needs the server
+and an hour, costs money, and cannot see regressions -- the change that stopped
+"Everyone, come to me" reaching any agent shipped with passing unit tests and was
+found only by the operator noticing in-game.
+
+It also produced a comparison that could not be trusted. Bob's Luna and Terra
+sessions ran days apart on different world states with several commits between
+them, so the measured difference mixed the model with every intervening fix.
+
+### Decisions
+
+**Record what each run was** (`run_manifests`): commit, uncommitted files,
+configuration, exact prompt. Cheap, and it removes a whole class of confound.
+
+**Record decision inputs and replay them** (`decision_inputs`, `src/replay`). A
+decision is a pure function of its inputs, so real situations can be put to a
+changed prompt or another model without a server. Replay deliberately tests
+decisions only, one step deep: it cannot say whether an action would have
+succeeded, and a different choice does not change what the next turn observed.
+Graded identical / same tools / different choice, because different arguments to
+the same tool are usually noise while a different tool is a different decision.
+
+**Turn every hand-written diagnosis into a named check** (`src/telemetry/doctor.ts`).
+Thresholds come from incidents, not guesses, and each check has a test for the
+nearby situation that must NOT trip it -- standing still under a "stay put"
+order is obedience, and a check that cries wolf gets ignored.
+
+**Scenario tests against the real server**, driven over RCON on a glass arena at
+x=25000, z=25000. A separate test world would need a second concurrent server,
+which a laptop cannot comfortably run; distance plus no global state changes
+(no gamerules, time or weather) gives isolation instead. RCON follows
+`server-ip`, and `enable-rcon.mjs` refuses unless that is loopback.
+
+Scenario agents route chat privately between themselves (`AgentOptions.say`).
+Chat is global, and a test agent's name is not in `config/agents/`, so anything
+it said in the shared world would reach the real agents as a *person* -- with the
+authority to give them standing orders.
+
+### What it found immediately
+
+Run against the last real session, the doctor independently reproduced every
+problem previously found by hand. On its first run the scenario harness found a
+bug nothing else had: crafting at a crafting table was silently rejected by the
+server 4 times in 4, because mineflayer writes the craft result into its own
+model of the window without waiting for confirmation. The root cause is not
+confirmed -- it is not a window-contents race, not timing, and not inventory
+desync, all measured -- but it clears within eight attempts and a rejected
+attempt consumes nothing, so craft_item now retries exactly that case.

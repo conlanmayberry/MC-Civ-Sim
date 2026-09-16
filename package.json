@@ -27,7 +27,9 @@
     "talk": "node src/cli/talk.ts",
     "dashboard": "node src/dashboard/server.ts",
     "replay": "node src/replay/main.ts",
-    "doctor": "node src/telemetry/query.ts doctor"
+    "doctor": "node src/telemetry/query.ts doctor",
+    "scenarios": "node src/scenario/main.ts",
+    "minecraft:enable-rcon": "node scripts/enable-rcon.mjs"
   },
   "dependencies": {
     "mineflayer": "^4.39.0",

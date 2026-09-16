@@ -62,6 +62,46 @@ const TABLE_REACH = 2;
 
 export const DEFAULT_CRAFT_TIMEOUT_MS = 45_000;
 
+/**
+ * How many times to re-attempt a repetition the server silently rejected.
+ *
+ * Found by the scenario harness on its first run: crafting at a crafting table
+ * "produced nothing", with no error, most of the time. mineflayer's craft does
+ * not wait for the server to confirm -- it writes the result into its own copy
+ * of the window and resolves -- so a rejected click sequence looks exactly
+ * like a craft that happened, until the server resyncs the inventory back.
+ * Almost certainly the same bug behind "crafting wooden_hoe produced nothing"
+ * in a live session, and part of craft_item's 49% success rate.
+ *
+ * ROOT CAUSE NOT CONFIRMED, and the measurements say what it is not. Measured
+ * against a live 1.21.8 server: not a race with the window's contents
+ * (mineflayer already waits for them), not time-dependent (a 2.5s wait before
+ * crafting changed nothing), not client inventory desync (a forced resync
+ * changed nothing). What it is: a per-attempt rejection that clears after a
+ * few tries -- 14 trials needed 1, 1, 2, 2, 3, 3, 4, 4, 4, 4, 5, 7, 7 and 8
+ * attempts. Eight retries covers every one observed; the scenario test
+ * `craft_to_pickaxe` will say if that stops being enough.
+ *
+ * Only ever retried when NOTHING was consumed (see inventorySignature below).
+ * The standing rule here is that a failed repetition must not be repeated,
+ * because failed crafts have stranded materials before; a rejection that left
+ * the inventory untouched has nothing to strand.
+ */
+const SILENT_REJECT_RETRIES = 8;
+const SILENT_REJECT_PAUSE_MS = 150;
+
+/** The whole inventory as one comparable string, to tell "rejected" from "consumed". */
+function inventorySignature(bot: Bot): string {
+  const counts = new Map<string, number>();
+  for (const item of bot.inventory.items()) {
+    counts.set(item.name, (counts.get(item.name) ?? 0) + item.count);
+  }
+  return [...counts.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, count]) => `${name}:${count}`)
+    .join(',');
+}
+
 function inventoryCount(bot: Bot, name: string): number {
   return bot.inventory
     .items()
@@ -193,9 +233,11 @@ export function createCraftActions(ctx: ActionContext) {
           let crafted = 0;
           let done = 0;
           let craftError: string | null = null;
+          let silentRejects = 0;
 
           for (let rep = 0; rep < times; rep++) {
             if (signal.aborted) break;
+            const inventoryBefore = inventorySignature(bot);
 
             // Re-resolve every time: the inventory has changed since the last
             // repetition, and this is the check that "can I still afford it?"
@@ -265,9 +307,27 @@ export function createCraftActions(ctx: ActionContext) {
               if (after > crafted) break;
             }
 
-            // This repetition produced nothing. Repeating it would fail the
-            // same way and strand more materials, so stop and report.
-            if (after <= crafted) break;
+            if (after <= crafted) {
+              // Rejected without consuming anything: the server refused the
+              // clicks and put the inventory back exactly as it was. Nothing
+              // can be stranded by trying again, and trying again works -- see
+              // SILENT_REJECT_RETRIES.
+              if (
+                craftError === null &&
+                silentRejects < SILENT_REJECT_RETRIES &&
+                inventorySignature(bot) === inventoryBefore
+              ) {
+                silentRejects++;
+                await sleep(SILENT_REJECT_PAUSE_MS);
+                rep--;
+                continue;
+              }
+
+              // Otherwise something was consumed or the craft errored.
+              // Repeating it would fail the same way and strand more
+              // materials, so stop and report.
+              break;
+            }
 
             crafted = after;
             done++;

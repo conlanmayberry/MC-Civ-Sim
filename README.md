@@ -98,6 +98,9 @@ version must match the server exactly.
 | `talk-alice.bat` / `talk-bob.bat` / `talk-carla.bat` / `talk-dmitri.bat` | chat with one specific agent |
 | `dashboard.bat` | open the web dashboard |
 | `response-times.bat` | how long the agent takes to answer; pass `all` to compare runs |
+| `doctor.bat` | check the latest session for every known failure pattern — **free** |
+| `scenarios.bat` | repeatable tests on a test arena; `--live` for agent tests — **free / a few cents** |
+| `replay.bat` | re-run recorded decisions under the current prompt or another model — dry run unless `--go` |
 
 `npm run telemetry compare` puts the agents side by side — turns, think time,
 action success rate, blocks placed, messages sent, deaths, spend per hour —
@@ -108,6 +111,58 @@ the world rather than instead of it.
 
 They change to the project directory themselves and install dependencies on
 first run, so they work from anywhere.
+
+## Testing changes without playing for an hour
+
+Most problems in this project used to be found the slow way: run the agents for
+an hour, then dig through telemetry by hand until the pattern showed. Four
+tools replace that loop. See
+[ADR-012](docs/decisions.md#adr-012--a-reliability-harness-before-more-features).
+
+**Every run records what it was.** Each agent writes down, at startup, the git
+commit it is running, any uncommitted files, its full configuration and its
+exact system prompt. A comparison between two sessions is then between known
+quantities, and the startup banner warns when a run is not reproducible from a
+commit.
+
+**`npm run doctor`** checks a session for every failure pattern that has
+actually happened: the same failure repeated dozens of times, actions that
+mostly fail, a success rate that dropped since last session, handovers never
+picked up, starvation, standing still outside a standing order, more talking
+than doing, and agents running different code. It prints automatically when
+each agent stops, and the dashboard shows it under Actions.
+
+**`npm run replay`** takes real situations from a past session and puts them to
+the *current* prompt, or another model, then reports how the decisions changed
+-- including a tool-by-tool shift like `send_chat 140 -> 60`. No server needed.
+It tests decisions, never execution, and has a free `--dry-run` estimate and a
+hard spend cap. Situations are recorded from this version onward, so older
+sessions cannot be replayed.
+
+```bash
+npm run replay -- --dry-run
+```
+
+```bash
+npm run replay -- --model gpt-5.6-terra --prompt recorded
+```
+
+**`npm run scenarios`** runs small repeatable tests against the real server on a
+glass arena at x=25000, z=25000 -- far from anywhere agents go, and removable
+with `--cleanup`. The free ones drive actions directly (handovers, getting round
+a wall, following a moving player, building, mining, crafting, eating); `--live`
+adds full-agent tests for a few cents. Results are kept, so something that
+passed before and fails now is reported as a regression. They need RCON, which
+is loopback-only here -- enable it once, then restart the server:
+
+```bash
+npm run minecraft:enable-rcon
+```
+
+Replay catches decision regressions and scenarios catch execution bugs; neither
+replaces the other. On its first run the scenario harness found a bug nothing
+else had: crafting at a table was silently rejected by the server most of the
+time, which is the likely source of `craft_item`'s 49% success rate.
 
 ## Roles, and which model an agent thinks with
 
