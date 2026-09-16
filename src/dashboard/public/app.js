@@ -36,6 +36,7 @@ const ui = {
   decisions: el('decisions'),
   decisionsCount: el('decisions-count'),
   actions: el('actions'),
+  health: el('health'),
   map: el('map'),
   mapReadout: el('map-readout'),
   mapRadius: el('map-radius'),
@@ -407,6 +408,35 @@ function renderDecisions(rows) {
     .join('');
 }
 
+/**
+ * The doctor's findings: this agent's, plus anything about the whole session.
+ *
+ * Problems used to be found by querying telemetry by hand after a session; this
+ * puts the same named checks next to the agent while it is still running.
+ */
+function renderHealth(body) {
+  if (!ui.health) return;
+  const findings = (body?.findings ?? []).filter(
+    (f) => f.agent === null || f.agent === state.selected,
+  );
+  const serious = findings.filter((f) => f.severity !== 'info');
+
+  if (serious.length === 0) {
+    ui.health.innerHTML = `<p class="health-ok">No known failure patterns for this agent.</p>`;
+    return;
+  }
+
+  ui.health.innerHTML = serious
+    .map(
+      (f) => `<div class="finding ${esc(f.severity)}">
+        <span class="sev">${f.severity === 'error' ? 'error' : 'warn'}</span>
+        <span class="msg">${esc(f.message)}</span>
+        <span class="check">${esc(f.check)}</span>
+      </div>`,
+    )
+    .join('');
+}
+
 function renderActions(rows) {
   if (rows.length === 0) {
     ui.actions.innerHTML = `<p class="empty">No actions yet.</p>`;
@@ -728,17 +758,19 @@ async function refreshHistory() {
   if (state.selected === null) return;
   const q = `agent=${encodeURIComponent(state.selected)}`;
   try {
-    const [decisions, actions, trail, marks, places, chat] = await Promise.all([
+    const [decisions, actions, trail, marks, places, chat, health] = await Promise.all([
       getJson(`/api/decisions?${q}&limit=30`),
       getJson(`/api/actions?${q}`),
       getJson(`/api/trail?${q}`),
       getJson(`/api/marks?${q}`),
       getJson(`/api/places?${q}`),
       getJson(`/api/chat?${q}&limit=40`),
+      getJson('/api/health'),
     ]);
     renderDecisions(decisions);
     renderActions(actions);
     renderChat(chat);
+    renderHealth(health);
     // Newest-first from SQL; the map wants oldest-first to draw a path.
     state.trail = trail.slice().reverse();
     state.marks = marks;

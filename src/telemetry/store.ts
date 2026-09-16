@@ -93,12 +93,62 @@ export interface Store {
   loadPlaces: (agentId: string) => PlaceRow[];
   /** Record a place, replacing any earlier one of the same name. */
   savePlace: (agentId: string, place: PlaceRow) => void;
+  /** Record what this run is: code, configuration, exact prompt. */
+  saveManifest: (row: ManifestRow) => void;
+  /** Record what a decision was made from, so it can be replayed. */
+  saveDecisionInput: (row: DecisionInputRow) => void;
+  saveScenarioResult: (row: ScenarioResultRow) => void;
   /** Escape hatch for the query CLI; do not use for writes. */
   raw: () => DatabaseSync;
   pendingCount: () => number;
 }
 
 /** One remembered location. Mirrors the `places` table. */
+/** What a run was. Mirrors the `run_manifests` table. */
+export interface ManifestRow {
+  runId: string;
+  agentId: string;
+  createdAt: string;
+  gitCommit: string | null;
+  gitDirty: boolean | null;
+  dirtyFiles: string[];
+  nodeVersion: string;
+  minecraftVersion: string;
+  provider: string;
+  model: string;
+  intervalMs: number;
+  budgetUsd: number;
+  identity: unknown;
+  settings: Record<string, unknown>;
+  systemPrompt: string;
+  systemPromptHash: string;
+  toolsHash: string;
+}
+
+/** What one decision was made from. Mirrors `decision_inputs`. */
+export interface DecisionInputRow {
+  runId: string;
+  agentId: string;
+  cycle: number;
+  timestamp: string;
+  trigger: string;
+  observation: string;
+  history: string[];
+  injections: string[];
+}
+
+/** One scenario outcome. Mirrors `scenario_results`. */
+export interface ScenarioResultRow {
+  batchId: string;
+  runAt: string;
+  scenarioId: string;
+  verdict: 'pass' | 'fail' | 'skip';
+  detail: string;
+  durationMs: number;
+  gitCommit: string | null;
+  gitDirty: boolean | null;
+}
+
 export interface PlaceRow {
   name: string;
   x: number;
@@ -182,6 +232,12 @@ export function openStore(dbPath: string, options: StoreOptions = {}): Store {
        updated_at = excluded.updated_at`,
   );
 
+  const insertDecisionInput: StatementSync = db.prepare(
+    `INSERT OR REPLACE INTO decision_inputs (
+       run_id, agent_id, cycle, timestamp, trigger, observation, history, injections
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+
   const pending: EventRow[] = [];
   let closed = false;
 
@@ -243,6 +299,78 @@ export function openStore(dbPath: string, options: StoreOptions = {}): Store {
         note: String(row['note'] ?? ''),
         updatedAt: String(row['updated_at']),
       }));
+    },
+
+    saveManifest(row) {
+      if (closed) return;
+      // Written once, straight through: a run with no record of what it was
+      // is the problem this table exists to end.
+      db.prepare(
+        `INSERT OR REPLACE INTO run_manifests (
+           run_id, agent_id, created_at, git_commit, git_dirty, dirty_files,
+           node_version, minecraft_version, provider, model, interval_ms,
+           budget_usd, identity, settings, system_prompt, system_prompt_hash,
+           tools_hash
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        row.runId,
+        row.agentId,
+        row.createdAt,
+        row.gitCommit,
+        row.gitDirty === null ? null : row.gitDirty ? 1 : 0,
+        JSON.stringify(row.dirtyFiles),
+        row.nodeVersion,
+        row.minecraftVersion,
+        row.provider,
+        row.model,
+        row.intervalMs,
+        row.budgetUsd,
+        JSON.stringify(row.identity),
+        JSON.stringify(row.settings),
+        row.systemPrompt,
+        row.systemPromptHash,
+        row.toolsHash,
+      );
+    },
+
+    saveDecisionInput(row) {
+      if (closed) return;
+      // Never allowed to take a decision down with it: replay is analysis, and
+      // losing one input is far cheaper than losing the turn.
+      try {
+        insertDecisionInput.run(
+          row.runId,
+          row.agentId,
+          row.cycle,
+          row.timestamp,
+          row.trigger,
+          row.observation,
+          JSON.stringify(row.history),
+          JSON.stringify(row.injections),
+        );
+      } catch (err) {
+        process.stderr.write(
+          `[telemetry] decision input not recorded: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
+    },
+
+    saveScenarioResult(row) {
+      if (closed) return;
+      db.prepare(
+        `INSERT INTO scenario_results (
+           batch_id, run_at, scenario_id, verdict, detail, duration_ms, git_commit, git_dirty
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        row.batchId,
+        row.runAt,
+        row.scenarioId,
+        row.verdict,
+        row.detail,
+        row.durationMs,
+        row.gitCommit,
+        row.gitDirty === null ? null : row.gitDirty ? 1 : 0,
+      );
     },
 
     savePlace(agentId, place) {

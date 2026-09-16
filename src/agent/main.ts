@@ -38,10 +38,17 @@ import { createStubProvider } from '../ai/provider.ts';
 import type { AiProvider } from '../ai/provider.ts';
 import { createAgent } from './agent.ts';
 import { agentUsernames, loadIdentityById } from './identity.ts';
+import type { AgentIdentity } from './identity.ts';
 import { createInbox } from './inbox.ts';
 import { createHearing } from './hearing.ts';
 import { createOrders } from './orders.ts';
-import { createPlaces } from './places.ts';
+import { MAX_PLACES, createPlaces } from './places.ts';
+import { CHAT_ALLOWANCE, CHAT_WINDOW_MS } from './voice.ts';
+import { SETBACK_TTL_TURNS } from './setbacks.ts';
+import { HISTORY_WINDOW, buildSystemPrompt } from '../ai/prompt.ts';
+import { TOOL_SCHEMAS } from '../ai/tools.ts';
+import { buildManifest, describeGitState, readGitState } from '../telemetry/manifest.ts';
+import { renderFindings, runDoctor } from '../telemetry/doctor.ts';
 import { DEFAULT_CONTROL_PORT, startControlServer } from './control.ts';
 import type { ControlServer } from './control.ts';
 
@@ -82,7 +89,7 @@ const budgetUsd = numberSetting('budget', 'AI_BUDGET_USD', DEFAULT_LIMITS.maxUsd
 const config = loadConfig();
 const startedAt = new Date().toISOString();
 
-let identity;
+let identity: AgentIdentity;
 try {
   identity = loadIdentityById(agentId);
 } catch (err) {
@@ -158,6 +165,41 @@ const telemetry = createTelemetry(identity.id, {
 });
 const log = telemetry.logger;
 
+// What this run IS, recorded before it does anything. Every later comparison
+// between runs depends on knowing the code, the configuration and the exact
+// prompt, rather than remembering them.
+const gitState = readGitState(ROOT);
+try {
+  telemetry.store.saveManifest(
+    buildManifest({
+      runId: telemetry.runId,
+      agentId: identity.id,
+      git: gitState,
+      minecraftVersion: config.version,
+      provider: provider.id,
+      model: provider.model,
+      intervalMs,
+      budgetUsd: limits.maxUsd,
+      identity,
+      settings: {
+        historyWindow: HISTORY_WINDOW,
+        chatAllowance: CHAT_ALLOWANCE,
+        chatWindowMs: CHAT_WINDOW_MS,
+        setbackTtlTurns: SETBACK_TTL_TURNS,
+        maxPlaces: MAX_PLACES,
+        hearingRadius: Number(env['AGENT_HEARING_RADIUS'] ?? '') > 0
+          ? Number(env['AGENT_HEARING_RADIUS'])
+          : null,
+        dryRun,
+      },
+      systemPrompt: buildSystemPrompt(identity),
+      tools: TOOL_SCHEMAS,
+    }),
+  );
+} catch (err) {
+  console.error(`  ${YELLOW}run manifest not recorded: ${err instanceof Error ? err.message : String(err)}${RESET}`);
+}
+
 console.log('');
 console.log(`${BOLD}  MC-Civ-Sim agent${RESET}  ${identity.username} (${identity.id})`);
 console.log(`  ${DIM}${identity.traits.join(', ')}${RESET}`);
@@ -177,12 +219,42 @@ if (dryRun) {
 }
 console.log(`  ${DIM}stop with "agent stop" in chat, Ctrl-C, or by creating a file named STOP${RESET}`);
 console.log(`  ${DIM}recording run ${telemetry.runId}${RESET}`);
+console.log(
+  gitState.dirty === true
+    ? `  ${YELLOW}${describeGitState(gitState)}${RESET}`
+    : `  ${DIM}${describeGitState(gitState)}${RESET}`,
+);
 console.log('');
 
 // A stale STOP file from a previous run would stop this one instantly.
 if (fs.existsSync(KILL_FILE)) {
   fs.rmSync(KILL_FILE, { force: true });
   console.log(`  ${DIM}(removed a leftover STOP file)${RESET}\n`);
+}
+
+/**
+ * This agent's own health report, printed as it stops.
+ *
+ * A session used to end silently, and what went wrong was found later by
+ * querying telemetry by hand. The report comes to the operator instead, in the
+ * window they are already looking at. Only this agent's run, and no regression
+ * checks -- those need the whole session, which is what `npm run doctor` is for.
+ */
+let healthReported = false;
+function reportHealth(): void {
+  if (healthReported) return;
+  healthReported = true;
+  try {
+    telemetry.store.flush();
+    const findings = runDoctor(telemetry.store.raw(), { runIds: [telemetry.runId] });
+    console.log(`
+  ${BOLD}Health${RESET} ${DIM}${identity.username}, this run -- npm run doctor for the whole session${RESET}`);
+    for (const line of renderFindings(findings)) console.log(line);
+    console.log('');
+  } catch (err) {
+    // Diagnosis must never stand in the way of shutting down.
+    console.error(`  ${DIM}(health report unavailable: ${err instanceof Error ? err.message : String(err)})${RESET}`);
+  }
 }
 
 // --- wire it up --------------------------------------------------------------
@@ -216,7 +288,15 @@ const agent = createAgent({
   orders,
   log,
   intervalMs,
+  recordInput: (input) =>
+    telemetry.store.saveDecisionInput({
+      runId: telemetry.runId,
+      agentId: identity.id,
+      timestamp: new Date().toISOString(),
+      ...input,
+    }),
   onStopped: (reason) => {
+    reportHealth();
     telemetry.close();
     session?.stop(reason);
     setTimeout(() => process.exit(0), 500);

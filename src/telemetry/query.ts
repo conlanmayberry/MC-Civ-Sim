@@ -9,6 +9,7 @@
  *     npm run telemetry errors          what failed, and why
  *     npm run telemetry latency [all]   how long the agent takes to respond
  *     npm run telemetry compare [all]   agents side by side: cost, work, talk
+ *     npm run telemetry doctor [spec]   known failure patterns (latest|previous|all|<run>)
  *     npm run telemetry sql "SELECT..." anything else
  *
  * The subcommands exist to answer the six questions the project brief sets as
@@ -24,6 +25,8 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 
 import { DEFAULT_DB_PATH } from './index.ts';
+import { renderFindings, runDoctor } from './doctor.ts';
+import { resolveRuns } from './sessions.ts';
 import type { ChatEventRow, Reply, Unanswered } from './latency.ts';
 import { distribution, pairReplies, percentile, secs, triggerKind } from './latency.ts';
 
@@ -472,6 +475,37 @@ switch (subcommand) {
     break;
   }
 
+  case 'doctor': {
+    // Known failure patterns, checked. See doctor.ts for why each exists.
+    const spec = args[0] ?? 'latest';
+    const runs = resolveRuns(db, spec);
+    if (runs.length === 0) {
+      console.log(`  ${DIM}(no runs match "${spec}")${RESET}`);
+      break;
+    }
+
+    // "Did this get worse" only makes sense against the session before this
+    // one, so regression checks run for the latest session only.
+    const previous = spec === 'latest' ? resolveRuns(db, 'previous') : [];
+    const findings = runDoctor(db, {
+      runIds: runs.map((r) => r.runId),
+      previousRunIds: previous.map((r) => r.runId),
+    });
+
+    console.log(
+      `${BOLD}  Doctor${RESET} ${DIM}${spec} -- ${runs.map((r) => `${r.agentId} (${r.decisions} turns)`).join(', ')}${RESET}`,
+    );
+    for (const line of renderFindings(findings)) console.log(line);
+
+    const errors = findings.filter((f) => f.severity === 'error').length;
+    const warnings = findings.filter((f) => f.severity === 'warn').length;
+    console.log('');
+    console.log(`  ${DIM}${errors} error(s), ${warnings} warning(s)${RESET}`);
+    // Non-zero on errors, so a script or a scenario batch can act on it.
+    if (errors > 0) process.exitCode = 1;
+    break;
+  }
+
   case 'sql': {
     const sql = args.join(' ');
     if (sql === '') {
@@ -491,7 +525,7 @@ switch (subcommand) {
   default:
     console.error(`  Unknown subcommand "${subcommand}".`);
     console.error(
-      `  ${DIM}summary | timeline [n] | actions | errors | inventory | latency [all] | compare [all] | sql "..."${RESET}`,
+      `  ${DIM}summary | timeline [n] | actions | errors | inventory | latency [all] | compare [all] | doctor [spec] | sql "..."${RESET}`,
     );
     process.exit(1);
 }

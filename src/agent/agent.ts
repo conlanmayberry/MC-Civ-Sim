@@ -50,6 +50,20 @@ export interface AgentOptions {
   intervalMs: number;
   /** Called when the agent stops for good. */
   onStopped?: (reason: string) => void;
+  /**
+   * Called with exactly what each decision is made from, just before it is
+   * made. This is what replay re-runs later -- see src/replay.
+   */
+  recordInput?: (input: DecisionInput) => void;
+}
+
+/** Everything a decision is a function of, besides the system prompt and tools. */
+export interface DecisionInput {
+  cycle: number;
+  trigger: string;
+  observation: string;
+  history: string[];
+  injections: string[];
 }
 
 export interface Agent {
@@ -272,14 +286,32 @@ export function createAgent(options: AgentOptions): Agent {
       order: orders.current(),
     });
 
+    const decisionHistory = trimHistory(history);
+    const decisionInjections = injections.map((i) => i.text);
+
+    // Recorded before the call, so a decision that errors or crashes still
+    // leaves the situation that produced it -- those are exactly the ones
+    // worth replaying.
+    try {
+      options.recordInput?.({
+        cycle,
+        trigger,
+        observation,
+        history: decisionHistory,
+        injections: decisionInjections,
+      });
+    } catch {
+      /* analysis must never cost the agent a turn */
+    }
+
     // Timed because thinking is dead air: the agent stands still for it, and
     // without a number there is no way to tell a slow model from a slow loop.
     const decideStarted = Date.now();
     const outcome = await provider.decide({
       system,
       observation,
-      history: trimHistory(history),
-      injections: injections.map((i) => i.text),
+      history: decisionHistory,
+      injections: decisionInjections,
       tools: [...TOOL_SCHEMAS],
     });
     const decisionMs = Date.now() - decideStarted;

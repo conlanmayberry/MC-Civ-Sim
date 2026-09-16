@@ -31,6 +31,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { ROOT, loadEnvFile } from '../config.ts';
 import { DEFAULT_CONTROL_PORT } from '../agent/control.ts';
 import { DEFAULT_DB_PATH } from '../telemetry/index.ts';
+import { runDoctor } from '../telemetry/doctor.ts';
+import { resolveRuns } from '../telemetry/sessions.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(HERE, 'public');
@@ -171,6 +173,9 @@ function newestSourceMtime(): string | null {
   walk(path.join(ROOT, 'src'));
   return newest === 0 ? null : new Date(newest).toISOString();
 }
+
+const HEALTH_CACHE_MS = 30_000;
+let healthCache: { at: number; body: unknown } | null = null;
 
 // --- routes ------------------------------------------------------------------
 
@@ -325,6 +330,33 @@ async function handleApi(
         agentId === null ? [] : [agentId],
       ),
     );
+    return true;
+  }
+
+  /**
+   * The doctor's findings for the latest session.
+   *
+   * Cached briefly: it reads the whole session, and the dashboard polls far
+   * more often than a session's health actually changes.
+   */
+  if (route === '/health') {
+    const now = Date.now();
+    if (healthCache === null || now - healthCache.at > HEALTH_CACHE_MS) {
+      healthCache = {
+        at: now,
+        body: withDb((db) => {
+          const runs = resolveRuns(db, 'latest');
+          return {
+            runs: runs.map((r) => ({ runId: r.runId, agentId: r.agentId, decisions: r.decisions })),
+            findings: runDoctor(db, {
+              runIds: runs.map((r) => r.runId),
+              previousRunIds: resolveRuns(db, 'previous').map((r) => r.runId),
+            }),
+          };
+        }, { runs: [], findings: [] }),
+      };
+    }
+    json(res, 200, healthCache.body);
     return true;
   }
 

@@ -25,7 +25,9 @@
     "telemetry": "node src/telemetry/query.ts",
     "agent": "node src/agent/main.ts",
     "talk": "node src/cli/talk.ts",
-    "dashboard": "node src/dashboard/server.ts"
+    "dashboard": "node src/dashboard/server.ts",
+    "replay": "node src/replay/main.ts",
+    "doctor": "node src/telemetry/query.ts doctor"
   },
   "dependencies": {
     "mineflayer": "^4.39.0",

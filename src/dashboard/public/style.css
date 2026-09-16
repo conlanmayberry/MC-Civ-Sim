@@ -827,3 +827,30 @@ button:disabled {
   padding: 4px 10px;
   margin-right: 8px;
 }
+
+/* Doctor findings, next to the action rates they usually explain. */
+.health { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.health-ok { font-size: 12px; color: var(--ink-dim); margin: 0; }
+.finding {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border-left: 3px solid var(--warn, #d8a531);
+  background: #d8a53114;
+}
+.finding.error { border-left-color: #c4553d; background: #c4553d18; }
+.finding .sev {
+  font: 600 10px/1.6 var(--mono);
+  text-transform: uppercase;
+  color: var(--warn, #d8a531);
+}
+.finding.error .sev { color: #e07a64; }
+.finding .check {
+  grid-column: 2;
+  font: 10px/1.2 var(--mono);
+  color: var(--ink-dim);
+}

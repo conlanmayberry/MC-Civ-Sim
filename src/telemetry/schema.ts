@@ -140,6 +140,83 @@ export const SCHEMA: readonly string[] = [
      PRIMARY KEY (agent_id, name)
    )`,
 
+  /**
+   * What a run WAS: the code, the configuration and the exact prompt.
+   *
+   * Added after a model comparison that could not be trusted. Bob's Luna and
+   * Terra sessions were days apart, on different world states, with several
+   * commits landing between them -- so part of the difference was the model
+   * and part was fixes shipped in between, and nothing recorded could separate
+   * the two. It also ends the stale-process question for good: a run says what
+   * it was actually executing.
+   *
+   * One row per (run, agent), since every agent is its own process and its own
+   * run. `system_prompt` is stored in full rather than hashed, because replay
+   * needs the exact text to reproduce a decision.
+   */
+  `CREATE TABLE IF NOT EXISTS run_manifests (
+     run_id             TEXT NOT NULL,
+     agent_id           TEXT NOT NULL,
+     created_at         TEXT NOT NULL,
+     git_commit         TEXT,
+     git_dirty          INTEGER,
+     dirty_files        TEXT,
+     node_version       TEXT,
+     minecraft_version  TEXT,
+     provider           TEXT,
+     model              TEXT,
+     interval_ms        INTEGER,
+     budget_usd         REAL,
+     identity           TEXT NOT NULL,
+     settings           TEXT NOT NULL,
+     system_prompt      TEXT NOT NULL,
+     system_prompt_hash TEXT NOT NULL,
+     tools_hash         TEXT NOT NULL,
+     PRIMARY KEY (run_id, agent_id)
+   )`,
+
+  /**
+   * Everything a decision was made FROM, so it can be made again.
+   *
+   * A decision is a pure function of its inputs -- system prompt, observation,
+   * history, injections -- and the `decision` event already records the
+   * output. Keeping the inputs is what lets a prompt or model change be tested
+   * against hundreds of real situations from a past session, in minutes and
+   * without a server, instead of against a fresh hour of play that can never
+   * be compared like for like.
+   *
+   * Kept out of `events` on purpose: these rows are several kilobytes each,
+   * and every dashboard query and CLI report would pay for them.
+   */
+  `CREATE TABLE IF NOT EXISTS decision_inputs (
+     run_id      TEXT NOT NULL,
+     agent_id    TEXT NOT NULL,
+     cycle       INTEGER NOT NULL,
+     timestamp   TEXT NOT NULL,
+     trigger     TEXT,
+     observation TEXT NOT NULL,
+     history     TEXT NOT NULL,
+     injections  TEXT NOT NULL,
+     PRIMARY KEY (run_id, agent_id, cycle)
+   )`,
+
+  /**
+   * Scenario test outcomes, kept so a regression is visible as a regression.
+   * A scenario that passed last week and fails today is the most useful thing
+   * the harness can say, and a JSON file per run cannot say it.
+   */
+  `CREATE TABLE IF NOT EXISTS scenario_results (
+     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+     batch_id    TEXT NOT NULL,
+     run_at      TEXT NOT NULL,
+     scenario_id TEXT NOT NULL,
+     verdict     TEXT NOT NULL,
+     detail      TEXT NOT NULL,
+     duration_ms INTEGER NOT NULL,
+     git_commit  TEXT,
+     git_dirty   INTEGER
+   )`,
+
   // --- indexes ------------------------------------------------------------
   // Chosen for the questions the brief says the system must answer, not
   // speculatively: what did an agent do and when (1), what happened of a given
@@ -149,4 +226,5 @@ export const SCHEMA: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_events_action     ON events (action, ok)`,
   `CREATE INDEX IF NOT EXISTS idx_events_run        ON events (run_id, id)`,
   `CREATE INDEX IF NOT EXISTS idx_snapshots_agent   ON snapshots (agent_id, timestamp)`,
+  `CREATE INDEX IF NOT EXISTS idx_scenarios_id      ON scenario_results (scenario_id, id)`,
 ];
