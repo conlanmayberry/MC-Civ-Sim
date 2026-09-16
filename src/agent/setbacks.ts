@@ -38,6 +38,14 @@ export interface Setbacks {
   /** Clears the record for an attempt that has now worked. */
   succeeded: (action: string, args: Record<string, unknown>) => void;
   all: (turn: number) => Setback[];
+  /**
+   * Is this EXACT attempt already a known setback? Used to stop a single
+   * decision from spending several of its own tool calls on the identical
+   * doomed thing -- see agent.ts, where a decision to place three cobblestone
+   * at the same already-solid coordinate ran all three against the world
+   * before the model ever saw that the first one had failed.
+   */
+  active: (action: string, args: Record<string, unknown>, turn: number) => Setback | null;
 }
 
 /** How many turns a setback is remembered for. */
@@ -102,6 +110,14 @@ export function createSetbacks(): Setbacks {
     all(turn) {
       prune(turn);
       return [...setbacks.values()];
+    },
+
+    active(action, args, turn) {
+      const key = attemptKey(action, args);
+      const setback = setbacks.get(key);
+      if (setback === undefined) return null;
+      if (turn - setback.turn > SETBACK_TTL_TURNS) return null;
+      return setback;
     },
   };
 }

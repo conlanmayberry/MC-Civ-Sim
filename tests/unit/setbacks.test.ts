@@ -89,6 +89,53 @@ describe('remembering setbacks', () => {
   });
 });
 
+describe('checking an attempt live, within the same batch', () => {
+  const place = { item: 'cobblestone', x: 1398, y: 53, z: -136 };
+
+  test('nothing is active before it has ever failed', () => {
+    const setbacks = createSetbacks();
+    assert.equal(setbacks.active('place_block', place, 1), null);
+  });
+
+  test('a fresh failure is active immediately -- no turn boundary needed', () => {
+    // This is the case that mattered: three identical place_block calls
+    // inside ONE decision, decided before the model had seen any of the
+    // results. Cross-turn memory alone could not catch that -- it only
+    // reaches the prompt on the NEXT decision -- so this has to work within
+    // the same cycle number, not just across cycles.
+    const setbacks = createSetbacks();
+    setbacks.record('place_block', place, 'stone already occupies that position', 12);
+    const active = setbacks.active('place_block', place, 12);
+
+    assert.notEqual(active, null);
+    assert.match(active?.why ?? '', /stone already occupies/);
+  });
+
+  test('a different attempt is not blocked by an unrelated one', () => {
+    const setbacks = createSetbacks();
+    setbacks.record('place_block', place, 'blocked', 5);
+    assert.equal(
+      setbacks.active('place_block', { ...place, x: 1399 }, 5),
+      null,
+      'a neighbouring coordinate is a different attempt',
+    );
+  });
+
+  test('succeeding clears it, so the very next identical call is not skipped', () => {
+    const setbacks = createSetbacks();
+    setbacks.record('place_block', place, 'blocked', 5);
+    setbacks.succeeded('place_block', place);
+    assert.equal(setbacks.active('place_block', place, 5), null);
+  });
+
+  test('it still expires with the rest of the memory', () => {
+    const setbacks = createSetbacks();
+    setbacks.record('place_block', place, 'blocked', 1);
+    assert.notEqual(setbacks.active('place_block', place, 1 + SETBACK_TTL_TURNS), null);
+    assert.equal(setbacks.active('place_block', place, 2 + SETBACK_TTL_TURNS), null);
+  });
+});
+
 describe('describing setbacks', () => {
   test('nothing failed means nothing is said', () => {
     assert.deepEqual(describeSetbacks([]), []);

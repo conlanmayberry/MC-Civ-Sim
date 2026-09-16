@@ -347,36 +347,60 @@ export function createAgent(options: AgentOptions): Agent {
         break;
       }
 
-      const result = await invokeTool(
-        actions,
-        (message) => {
-          if (!voice.trySpeak()) {
-            log.event('observation', {
-              note: 'chat withheld -- allowance spent',
-              message,
-              cycle,
-            });
-            return false;
-          }
-          bot.chat(message);
-          // Record it: the agent does not hear itself, so without this its own
-          // replies exist nowhere and every conversation reads one-sided.
-          log.event('chat_sent', { message, cycle });
-          return true;
-        },
-        call.name,
-        call.args,
-        (next) => {
-          // Restating the same goal is not a change, and recording it as one
-          // makes the telemetry read as though the agent kept changing its
-          // mind when it was in fact stuck.
-          if (next === goal) return false;
-          goal = next;
-          log.event('goal_set', { goal: next, cycle });
-          return true;
-        },
-        (name, note, at) => rememberPlace(bot, name, note, at, cycle),
-      );
+      // Skip a call that already failed THIS batch, rather than running it
+      // against the world a second or third time.
+      //
+      // Found live: one decision placed cobblestone at the same already-solid
+      // coordinate three times in a row -- not three separate turns re-trying
+      // it, but one batch of tool calls containing the identical failing call
+      // three times, because the model decided all three before seeing any of
+      // the results. Cross-turn setbacks (below) could not have caught this:
+      // they only reach the prompt on the NEXT decision, and by then the
+      // damage -- three wasted actions, three identical telemetry rows -- was
+      // already done. This is the same memory, checked one batch earlier.
+      const repeat = setbacks.active(call.name, call.args, cycle);
+      const result =
+        repeat !== null
+          ? {
+              ok: false as const,
+              action: call.name,
+              durationMs: 0,
+              detail: {},
+              error: {
+                code: 'blocked' as const,
+                message: `skipped -- this exact call already failed earlier in this same batch (${repeat.why}); it will not work unchanged`,
+              },
+            }
+          : await invokeTool(
+              actions,
+              (message) => {
+                if (!voice.trySpeak()) {
+                  log.event('observation', {
+                    note: 'chat withheld -- allowance spent',
+                    message,
+                    cycle,
+                  });
+                  return false;
+                }
+                bot.chat(message);
+                // Record it: the agent does not hear itself, so without this its
+                // own replies exist nowhere and every conversation reads one-sided.
+                log.event('chat_sent', { message, cycle });
+                return true;
+              },
+              call.name,
+              call.args,
+              (next) => {
+                // Restating the same goal is not a change, and recording it as
+                // one makes the telemetry read as though the agent kept
+                // changing its mind when it was in fact stuck.
+                if (next === goal) return false;
+                goal = next;
+                log.event('goal_set', { goal: next, cycle });
+                return true;
+              },
+              (name, note, at) => rememberPlace(bot, name, note, at, cycle),
+            );
       results.push(describeForModel(call.name, result));
 
       // Remembered past the history window, and cleared the moment the same

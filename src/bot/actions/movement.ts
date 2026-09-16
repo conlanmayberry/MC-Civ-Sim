@@ -43,6 +43,21 @@ const WEDGE_SAMPLES = 6;
 const WEDGE_RETRIES = 3;
 /** A hop and a turn, to break whatever geometry the wedge got caught on. */
 const UNSTICK_MS = 600;
+/**
+ * The most any single pathfinding attempt gets, even when the overall budget
+ * is bigger.
+ *
+ * Measured live: "timeout after 1 attempt(s)" was the single most common
+ * movement failure, at distances as short as 6-16m -- and it was ALWAYS one
+ * attempt, never more, because the full timeout budget was handed to the
+ * first try. A path that has not arrived in 20s is not obviously a path that
+ * would arrive in 45s either, but a FRESH path computed from wherever the bot
+ * now stands often is: the first route can run through a bad chokepoint that
+ * a recompute from a slightly different position avoids entirely. Capping
+ * each attempt turns one long shot into two or three fresh ones within the
+ * same wall-clock budget.
+ */
+const MAX_ATTEMPT_MS = 20_000;
 
 export const DEFAULT_MOVE_TIMEOUT_MS = 45_000;
 
@@ -157,12 +172,17 @@ export async function navigateTo(
       bot,
       new goals.GoalNear(x, y, z, range),
       signal,
-      remainingBudget,
+      Math.min(remainingBudget, MAX_ATTEMPT_MS),
     );
     outcome = result.outcome;
     detail = result.detail;
 
-    if (outcome !== 'wedged') break;
+    // A plain timeout is retried the same as a wedge: both are "this attempt
+    // did not arrive", and a fresh path from a new position resolves each of
+    // them for the same reason. `no_path` is the one outcome retrying cannot
+    // fix -- pathfinder already concluded nothing connects the two points, and
+    // nothing about trying again changes that.
+    if (outcome !== 'wedged' && outcome !== 'timeout') break;
     if (bot.entity.position.distanceTo(target) <= range + 1) {
       outcome = 'reached';
       break;
@@ -249,29 +269,68 @@ export function createMovementActions(ctx: ActionContext) {
       return runner.run(
         { action: 'follow_player', eventType: 'movement', timeoutMs },
         async (signal) => {
-          const target = bot.players[username]?.entity;
-          if (target === undefined || target === null) {
+          const first = bot.players[username]?.entity;
+          if (first === undefined || first === null) {
             throw new ActionFailure('not_found', `cannot see ${username}`);
           }
+          const startDistance = bot.entity.position.distanceTo(first.position);
 
-          const startDistance = bot.entity.position.distanceTo(target.position);
-          const { outcome, detail } = await pathfindTo(
-            bot,
-            new goals.GoalFollow(target, range),
-            signal,
-            timeoutMs - 1_000,
-          );
+          // Retried the same way moveTo is, and for the same reason: this used
+          // to be a single un-retried pathfindTo call, which made it the
+          // worst-performing action in the tool surface (37.5% success,
+          // measured live) -- a target that is WALKING makes a wedge more
+          // likely to occur, not less, so this needed the retry more than
+          // moveTo did, not less.
+          const deadline = Date.now() + (timeoutMs - 1_000);
+          let outcome = 'no_path';
+          let detail = '';
+          let current = first;
+          let endDistance = startDistance;
 
-          const current = bot.players[username]?.entity;
-          const endDistance =
-            current === undefined || current === null
-              ? Number.NaN
-              : bot.entity.position.distanceTo(current.position);
+          for (let attempt = 0; attempt <= WEDGE_RETRIES; attempt++) {
+            const live = bot.players[username]?.entity;
+            if (live === undefined || live === null) {
+              // They were visible a moment ago and are not now -- report what
+              // is true right now rather than reasoning about the last attempt.
+              outcome = 'no_path';
+              detail = 'they are no longer visible';
+              current = first;
+              endDistance = Number.NaN;
+              break;
+            }
+            current = live;
 
-          // GoalFollow is dynamic and never "completes" while the target moves,
-          // so arriving within range counts as success even if goto did not
-          // resolve on its own.
-          if (Number.isFinite(endDistance) && endDistance <= range + 1) {
+            const remainingBudget = deadline - Date.now();
+            if (remainingBudget <= 1_000) {
+              outcome = 'timeout';
+              detail = 'ran out of time between retries';
+              break;
+            }
+
+            const result = await pathfindTo(
+              bot,
+              new goals.GoalFollow(live, range),
+              signal,
+              Math.min(remainingBudget, MAX_ATTEMPT_MS),
+            );
+            outcome = result.outcome;
+            detail = result.detail;
+
+            endDistance = bot.entity.position.distanceTo(live.position);
+            // GoalFollow never "completes" while the target keeps moving, so
+            // being within range counts as success even when goto did not
+            // resolve on its own.
+            if (endDistance <= range + 1) {
+              outcome = 'reached';
+              break;
+            }
+
+            if (outcome !== 'wedged' && outcome !== 'timeout') break;
+            if (signal.aborted) break;
+            await unstick(bot);
+          }
+
+          if (outcome === 'reached') {
             return {
               username,
               startDistance: round2(startDistance),
