@@ -41,6 +41,13 @@ export interface ActionRunner {
   busy: () => boolean;
   /** Name of the running action, for error messages. */
   current: () => string | null;
+  /**
+   * Take the body away from whatever holds it, for a reflex that cannot wait
+   * for the model -- surfacing before drowning. While held, the running action
+   * fails as `interrupted` with the reason, and new actions are refused the
+   * same way. Pass null to release.
+   */
+  hold: (reason: string | null) => void;
 }
 
 export interface ActionContext {
@@ -55,18 +62,25 @@ export function createActionRunner(log: Logger): ActionRunner {
   // on the same inventory. Rather than interleave, the second caller is told it
   // was refused, which is information Stage 5 can act on.
   let running: string | null = null;
+  let held: string | null = null;
+  let abortRunning: ((reason: string) => void) | null = null;
 
   return {
     busy: () => running !== null,
     current: () => running,
 
+    hold(reason) {
+      held = reason;
+      if (reason !== null) abortRunning?.(reason);
+    },
+
     async run(spec, body) {
       const started = Date.now();
 
-      if (running !== null) {
+      if (running !== null || held !== null) {
         const error: ActionError = {
           code: 'interrupted',
-          message: `busy running ${running}`,
+          message: held !== null ? held : `busy running ${running}`,
         };
         log.event(spec.eventType, {
           action: spec.action,
@@ -85,6 +99,11 @@ export function createActionRunner(log: Logger): ActionRunner {
       // connection.ts is the opposite case and is deliberately NOT unref'd.)
       const timer = setTimeout(() => controller.abort(), spec.timeoutMs);
       timer.unref();
+      let interruptedBy: string | null = null;
+      abortRunning = (reason) => {
+        interruptedBy = reason;
+        controller.abort();
+      };
 
       let result: ActionResult;
       try {
@@ -92,10 +111,17 @@ export function createActionRunner(log: Logger): ActionRunner {
           body(controller.signal),
           new Promise<never>((_resolve, reject) => {
             controller.signal.addEventListener('abort', () => {
-              reject(new ActionFailure('timeout', `exceeded ${spec.timeoutMs}ms`));
+              reject(
+                interruptedBy !== null
+                  ? new ActionFailure('interrupted', interruptedBy)
+                  : new ActionFailure('timeout', `exceeded ${spec.timeoutMs}ms`),
+              );
             });
           }),
         ]);
+        // A body that notices the abort and returns normally was still cut
+        // short; it must not read as having finished what it was asked.
+        if (interruptedBy !== null) throw new ActionFailure('interrupted', interruptedBy);
 
         result = {
           ok: true,
@@ -122,6 +148,7 @@ export function createActionRunner(log: Logger): ActionRunner {
       } finally {
         clearTimeout(timer);
         running = null;
+        abortRunning = null;
       }
 
       // One event per action, success or failure. Stage 4 swaps the sink for

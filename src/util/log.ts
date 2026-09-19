@@ -49,7 +49,9 @@ export type EventType =
   | 'agent_stopped'
   | 'goal_set'
   | 'place_remembered'
-  | 'item_given';
+  | 'item_given'
+  // Something the body did without the model -- see src/bot/reflexes.ts.
+  | 'reflex';
 
 export interface TelemetryEvent {
   readonly timestamp: string;

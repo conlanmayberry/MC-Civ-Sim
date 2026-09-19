@@ -166,3 +166,33 @@ describe('describeResult', () => {
     assert.match(text, /gained=4/);
   });
 });
+
+describe('holding the body for a reflex', () => {
+  test('aborts the running action as interrupted, with the reason', async () => {
+    const { logger } = recordingLogger();
+    const runner = createActionRunner(logger);
+
+    const running = runner.run({ ...spec, timeoutMs: 5_000 }, (signal) => new Promise((resolve) => {
+      signal.addEventListener('abort', () => resolve({}));
+    }));
+    runner.hold('swimming up for air');
+    const result = await running;
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error?.code, 'interrupted');
+    assert.equal(result.error?.message, 'swimming up for air');
+  });
+
+  test('refuses new actions until released', async () => {
+    const { logger } = recordingLogger();
+    const runner = createActionRunner(logger);
+
+    runner.hold('swimming up for air');
+    const refused = await runner.run(spec, async () => ({}));
+    assert.equal(refused.error?.code, 'interrupted');
+
+    runner.hold(null);
+    const allowed = await runner.run(spec, async () => ({}));
+    assert.equal(allowed.ok, true);
+  });
+});

@@ -19,6 +19,7 @@
 import type { Bot } from 'mineflayer';
 
 import type { ActionResult, Actions } from '../bot/actions/index.ts';
+import { DEATH_CAUSE_WAIT_MS, watchDeathCauses } from '../bot/death.ts';
 import type { Logger } from '../util/log.ts';
 import type { Budget } from '../ai/budget.ts';
 import { backoffMs, classifyProviderError } from '../ai/errors.ts';
@@ -524,12 +525,27 @@ export function createAgent(options: AgentOptions): Agent {
         if (bot.food <= LOW_FOOD) nudge('hungry');
         else if (bot.health <= LOW_HEALTH) nudge('hurt');
       });
+      const deathCauses = watchDeathCauses(bot);
       bot.on('death', () => {
-        // Recorded before the nudge, while the position is still the one it
-        // died at. Where you died is the single most useful thing to know
-        // afterwards -- your things are there, and so is whatever killed you.
-        rememberPlace(bot, 'where i died', 'my things dropped here', null, cycle);
-        nudge('died');
+        // Position taken now, while it is still the one it died at. Where you
+        // died is the single most useful thing to know afterwards -- your
+        // things are there, and so is whatever killed you. The note waits a
+        // moment for the server's death message, because "drowned" changes
+        // whether going back for them is a good idea at all: in one session an
+        // agent drowned nine times, mostly diving back for its own things.
+        const p = bot.entity.position;
+        const at = { x: Math.round(p.x), y: Math.round(p.y), z: Math.round(p.z) };
+        setTimeout(() => {
+          const cause = deathCauses.latest();
+          const note = cause === null ? 'my things dropped here' : `I ${cause} here; my things dropped here`;
+          rememberPlace(bot, 'where i died', note.slice(0, 80), at, cycle);
+          if (cause !== null) history.push(`You died: you ${cause}.`);
+          nudge(cause === null ? 'died' : `died (${cause})`);
+        }, DEATH_CAUSE_WAIT_MS).unref();
+      });
+      actions.onReflex((what) => {
+        history.push(`Reflex: ${what}`);
+        nudge('swam up for air', true);
       });
       // Chat arrives via hear(), called from the single onChat handler in
       // main.ts. Registering another bot.on('chat') here would double-log every

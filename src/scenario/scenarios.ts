@@ -392,6 +392,83 @@ const eatWhenHungry: Scenario = {
   },
 };
 
+/**
+ * Surfacing before drowning, while busy.
+ *
+ * 28 of 33 deaths in the 2026-09-16 session were drownings. The bot starts at
+ * the bottom of a six-deep pool with nothing telling it to come up.
+ */
+const surfaceForAir: Scenario = {
+  id: 'surface_for_air',
+  title: 'a bot underwater swims up before it drowns',
+  live: false,
+  timeoutMs: 90_000,
+  async run({ arena }) {
+    await arena.fill(at(-3, -3), at(3, 3, 6), 'glass');
+    await arena.fill(at(-2, -2), at(2, 2, 5), 'water');
+    await arena.fill(at(-2, -2, 6), at(2, 2, 6), 'air'); // fill makes a solid box: open the lid
+    const a = await arena.spawn('ScenAlpha', at(0, 0));
+
+    const reflexes: string[] = [];
+    a.actions.onReflex((what) => reflexes.push(what));
+    let died = false;
+    a.bot.once('death', () => {
+      died = true;
+    });
+
+    // Walk the pool floor, as a bot pathing along a lake bed would. That the
+    // reflex also takes the body from a RUNNING action is covered in run.test.ts.
+    const corner = at(2, 2);
+    const busy = a.actions.moveTo(corner.x, corner.y, corner.z, 0, 40_000);
+    // Unaided, a bot at the bottom drowns in about 25s; give it longer.
+    let lowest = 20;
+    const watch = setInterval(() => {
+      lowest = Math.min(lowest, a.bot.oxygenLevel);
+    }, 250);
+    await until(() => died, 35_000, 250);
+    clearInterval(watch);
+    const move = await busy;
+
+    if (died) return fail(`drowned (reflexes: ${reflexes.length}, move: ${describeFailure(move)})`);
+    if (reflexes.some((r) => r.includes('could not reach air'))) return fail(`reflex gave up: ${reflexes.join(' / ')}`);
+    // Either the reflex pulled it up mid-move, or, once idle, it kept itself
+    // afloat before air ran low. Both are the point: it did not drown.
+    return pass(
+      `alive after 35s, air never below ${lowest}/20; ` +
+        (reflexes.length > 0 ? `reflex fired, move ended ${describeFailure(move)}` : 'stayed afloat without needing the reflex'),
+    );
+  },
+};
+
+/** Hunting: the only reliable food there is, and absent until 2026-09-16. */
+const huntCow: Scenario = {
+  id: 'hunt_cow',
+  title: 'attack_entity kills a cow and its meat can be collected',
+  live: false,
+  timeoutMs: 60_000,
+  async run({ arena }) {
+    const a = await arena.spawn('ScenAlpha', at(-4, 0));
+    const refused = await a.actions.attackEntity('ScenAlpha');
+    if (refused.ok || refused.error?.code !== 'invalid_argument') {
+      return fail(`attacking a player was not refused: ${describeFailure(refused)}`);
+    }
+
+    const cow = at(5, 0);
+    await arena.run(`summon minecraft:cow ${cow.x} ${cow.y} ${cow.z}`);
+    await sleep(1_000);
+
+    const attack = await a.actions.attackEntity('cow');
+    if (!attack.ok) return fail(`attack_entity: ${describeFailure(attack)}`);
+    await sleep(1_000);
+    await a.actions.collectNearbyItems(10);
+    await until(() => countItem(a.bot, 'beef') > 0, 3_000);
+    const beef = countItem(a.bot, 'beef');
+    return beef > 0
+      ? pass(`killed in ${String(attack.detail['hits'])} hit(s), collected ${beef} beef`)
+      : fail(`killed the cow but collected no beef`);
+  },
+};
+
 // --- live scenarios ----------------------------------------------------------------
 
 interface LiveAgent {
@@ -556,6 +633,8 @@ export const SCENARIOS: readonly Scenario[] = [
   mineLogs,
   craftChain,
   eatWhenHungry,
+  surfaceForAir,
+  huntCow,
   agentsAnswerGroupCall,
   agentFeedsHungryPeer,
 ];

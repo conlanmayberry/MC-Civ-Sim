@@ -65,6 +65,8 @@ describe('tool schemas', () => {
     // assertion is the deliberate act.
     const names = TOOL_SCHEMAS.map((t) => t.name).sort();
     assert.deepEqual(names, [
+      // Creatures only; attacking players is refused in the action itself.
+      'attack_entity',
       'collect_items',
       'craft_item',
       'eat_food',
@@ -136,7 +138,12 @@ function stubActions(record: string[]): Actions {
       record.push(`equip(${i},${String(d)})`);
       return ok('equip_item');
     },
+    attackEntity: async (target) => {
+      record.push(`attackEntity(${target})`);
+      return ok('attack_entity');
+    },
     busy: () => false,
+    onReflex: () => {},
   } as Actions;
 }
 

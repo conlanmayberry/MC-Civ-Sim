@@ -13,6 +13,7 @@ import type { Bot } from 'mineflayer';
 
 import type { BotConfig } from '../config.ts';
 import type { Logger } from '../util/log.ts';
+import { DEATH_CAUSE_WAIT_MS, watchDeathCauses } from './death.ts';
 
 /**
  * How long a connection must hold before its backoff history is forgiven.
@@ -225,14 +226,17 @@ export function connect(
       lastHealth = bot.health;
     });
 
+    const deathCauses = watchDeathCauses(bot);
     bot.on('death', () => {
-      log.event('death', {
-        position: {
-          x: Math.round(bot.entity.position.x),
-          y: Math.round(bot.entity.position.y),
-          z: Math.round(bot.entity.position.z),
-        },
-      });
+      const position = {
+        x: Math.round(bot.entity.position.x),
+        y: Math.round(bot.entity.position.y),
+        z: Math.round(bot.entity.position.z),
+      };
+      // Waits briefly for the server's death message, which carries the cause.
+      setTimeout(() => {
+        log.event('death', { position, cause: deathCauses.latest() });
+      }, DEATH_CAUSE_WAIT_MS).unref();
     });
 
     bot.on('kicked', (reason) => {

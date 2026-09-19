@@ -62,6 +62,21 @@ const MAX_ATTEMPT_MS = 20_000;
 export const DEFAULT_MOVE_TIMEOUT_MS = 45_000;
 
 /**
+ * Pathfinder costs a water block the same as a dry one by default, so it
+ * happily routes along a lake bed as the shortest way round -- and 28 of 33
+ * deaths in the 2026-09-16 session were drownings, mostly mid-move. Water is
+ * still allowed when there is no other way, just strongly disfavoured.
+ */
+const WATER_COST = 12;
+
+export function movementsFor(bot: Bot): InstanceType<typeof Movements> {
+  const movements = new Movements(bot);
+  // Present at runtime (movements.js) but missing from the bundled typings.
+  (movements as unknown as { liquidCost: number }).liquidCost = WATER_COST;
+  return movements;
+}
+
+/**
  * Drive pathfinder to a goal, aborting on a detected wedge.
  *
  * Returns the reason it ended rather than throwing, so callers can decide how
@@ -73,7 +88,7 @@ async function pathfindTo(
   signal: AbortSignal,
   timeoutMs: number,
 ): Promise<{ outcome: 'reached' | 'wedged' | 'no_path' | 'aborted' | 'timeout'; detail: string }> {
-  bot.pathfinder.setMovements(new Movements(bot));
+  bot.pathfinder.setMovements(movementsFor(bot));
 
   let settled: 'reached' | 'no_path' | null = null;
   let pathError = '';

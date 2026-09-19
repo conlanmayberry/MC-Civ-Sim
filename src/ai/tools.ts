@@ -152,6 +152,19 @@ export const TOOL_SCHEMAS: readonly ToolSchema[] = [
     }),
   },
   {
+    name: 'attack_entity',
+    description:
+      'Chase and attack the nearest animal or monster of a type until it dies: ' +
+      'hunting for food (cow, pig, sheep, chicken, rabbit, salmon, cod) or ' +
+      'fighting something attacking you (zombie, skeleton, spider). Equips ' +
+      'your best sword or axe first. Only creatures -- players and other agents ' +
+      'cannot be attacked. Walks over what it drops to pick it up. Fails ' +
+      'with not_found if none is within 24 blocks.',
+    parameters: object({
+      target: str('Creature type, e.g. cow, zombie.'),
+    }),
+  },
+  {
     name: 'set_goal',
     description:
       'State what you are working on. It is shown to you every turn and ' +
@@ -308,6 +321,9 @@ export async function invokeTool(
           reqInt(args['count'], 'count'),
           reqStr(args['username'], 'username'),
         );
+
+      case 'attack_entity':
+        return await actions.attackEntity(reqStr(args['target'], 'target'));
 
       case 'set_goal': {
         const goal = reqStr(args['goal'], 'goal').slice(0, 200);

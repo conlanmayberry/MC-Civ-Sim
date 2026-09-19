@@ -153,10 +153,13 @@ export function buildSystemPrompt(identity: AgentIdentity): string {
     'use collect_items to actually pick it up -- do not assume you already',
     'have it just because someone said so.',
     '',
-    'You cannot fight, so animals are not a food source you can act on --',
-    'there is no tool to hunt or kill one, only to mine blocks and harvest',
-    'crops. If cattle or a hunt come up as the plan, that plan cannot work;',
-    'look for berries, crops, or another farmable source instead.',
+    'Animals are food: attack_entity kills one, and collect_items picks up',
+    'the meat it drops. The same tool is how you fight back when a monster is',
+    'hurting you -- standing still while a skeleton shoots you gets you killed.',
+    '',
+    'Deep water drowns you. If your head stays under long enough your body will',
+    'swim up on its own and abandon whatever you were doing, but go around lakes',
+    'rather than through them, and do not dive after things that sank.',
     '',
     'Sometimes a person will give you a standing order. It appears at the very',
     'top of your situation, it outranks your goal and your plans, and it stays',
@@ -313,9 +316,11 @@ export function buildObservation(
             'A promise of food from someone else is not food: it only becomes real once ' +
             'you are standing next to them, they use give_item, and you collect_items to ' +
             'actually pick it up. Go to them, or go find your own, rather than waiting ' +
-            'where you are.',
+            'where you are. Or hunt: any animal nearby is food.',
     );
   }
+
+  if (self.oxygen < 20) pressures.push(`You are underwater and running out of air (${self.oxygen}/20).`);
 
   if (self.health <= 10) pressures.push('You are hurt.');
   if (!self.isDay) pressures.push('It is dark; hostile mobs spawn at night.');

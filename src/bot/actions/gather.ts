@@ -140,12 +140,18 @@ export function createGatherActions(ctx: ActionContext) {
     const deadline = Date.now() + timeoutMs;
     const before = totalItems(bot);
     let visited = 0;
+    // Drops walked to that are still lying there. Traced in the arena: two
+    // logs at 1.4m and 1.6m, the bot "arriving" at each in turn and picking up
+    // neither, ten times over -- a sweep that reported success and collected
+    // one of three logs. Two tries each, then leave it.
+    const attempts = new Map<number, number>();
 
     while (Date.now() < deadline && !signal.aborted && visited < MAX_DROPS_PER_SWEEP) {
       const nearest = Object.values(bot.entities)
         // `objectType` is deprecated in prismarine-entity and prints a stack
         // trace on every access; `name` alone identifies dropped items.
         .filter((e) => e.name === 'item')
+        .filter((e) => (attempts.get(e.id) ?? 0) < 2)
         .filter((e) => bot.entity.position.distanceTo(e.position) <= radius)
         .sort(
           (a, b) =>
@@ -155,15 +161,16 @@ export function createGatherActions(ctx: ActionContext) {
       if (nearest === undefined) break;
 
       const target = nearest.position.clone();
-      const nav = await navigateTo(
-        bot,
-        target.x,
-        target.y,
-        target.z,
-        1,
-        Math.max(4_000, Math.min(12_000, deadline - Date.now())),
-        signal,
-      );
+      attempts.set(nearest.id, (attempts.get(nearest.id) ?? 0) + 1);
+      const budget = (): number => Math.max(4_000, Math.min(12_000, deadline - Date.now()));
+      // Onto the drop's own block, not merely near it. Range 1 counts as
+      // arrived from a neighbouring block, which is often just outside
+      // vanilla's pickup box. Range 1 remains the fallback for a drop whose
+      // block cannot be stood in.
+      let nav = await navigateTo(bot, target.x, target.y, target.z, 0, budget(), signal);
+      if (!nav.ok && !signal.aborted) {
+        nav = await navigateTo(bot, target.x, target.y, target.z, 1, budget(), signal);
+      }
       visited++;
 
       // An unreachable drop may be in a wall or across a ravine. Give up on the

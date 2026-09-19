@@ -12,6 +12,8 @@ import type { Bot } from 'mineflayer';
 import pathfinderPkg from 'mineflayer-pathfinder';
 
 import type { Logger } from '../../util/log.ts';
+import { startReflexes } from '../reflexes.ts';
+import { createCombatActions } from './combat.ts';
 import { createCraftActions } from './craft.ts';
 import { createGatherActions } from './gather.ts';
 import { createMovementActions } from './movement.ts';
@@ -34,8 +36,11 @@ export interface Actions {
   eatFood: ReturnType<typeof createSurviveActions>['eatFood'];
   equipItem: ReturnType<typeof createSurviveActions>['equipItem'];
   giveItem: ReturnType<typeof createSurviveActions>['giveItem'];
+  attackEntity: ReturnType<typeof createCombatActions>['attackEntity'];
   /** True while an action holds the bot. */
   busy: () => boolean;
+  /** Hear about reflexes (surfacing for air) that took the body over. */
+  onReflex: (listener: (what: string) => void) => void;
 }
 
 /**
@@ -54,6 +59,8 @@ export function createActions(bot: Bot, log: Logger): Actions {
   const gather = createGatherActions(ctx);
   const craft = createCraftActions(ctx);
   const survive = createSurviveActions(ctx);
+  const combat = createCombatActions(ctx);
+  const reflexes = startReflexes(bot, runner, log);
 
   return {
     moveTo: movement.moveTo,
@@ -66,6 +73,8 @@ export function createActions(bot: Bot, log: Logger): Actions {
     eatFood: survive.eatFood,
     equipItem: survive.equipItem,
     giveItem: survive.giveItem,
+    attackEntity: combat.attackEntity,
     busy: runner.busy,
+    onReflex: reflexes.onReflex,
   };
 }

@@ -281,11 +281,18 @@ function hunger(db: DatabaseSync, runIds: readonly string[]): Finding[] {
   const starved = new Map<string, number>();
   for (const death of rows(
     db,
-    `SELECT agent_id, timestamp FROM events WHERE event_type = 'death' AND run_id IN (${holes(runIds)})`,
+    `SELECT agent_id, timestamp, json_extract(data, '$.cause') AS cause FROM events
+     WHERE event_type = 'death' AND run_id IN (${holes(runIds)})`,
     runIds,
   )) {
     const agent = String(death['agent_id']);
     const at = Date.parse(String(death['timestamp']));
+    // The server's own death message, when recorded, settles it. Guessing from
+    // the food bar called a skeleton volley "starvation" four times over.
+    if (typeof death['cause'] === 'string') {
+      if (death['cause'].startsWith('starved')) starved.set(agent, (starved.get(agent) ?? 0) + 1);
+      continue;
+    }
     // The snapshot taken at death records the inventory about to be lost, and
     // food as it was when the agent died.
     const before = (snapshots.get(agent) ?? [])
@@ -457,11 +464,13 @@ function deaths(db: DatabaseSync, runIds: readonly string[]): Finding[] {
   const hours = hoursByAgent(db, runIds);
   return rows(
     db,
-    `SELECT agent_id, COUNT(*) AS n FROM events
+    `SELECT agent_id, COUNT(*) AS n,
+            GROUP_CONCAT(COALESCE(json_extract(data, '$.cause'), 'cause not recorded'), '|') AS causes
+       FROM events
      WHERE event_type = 'death' AND run_id IN (${holes(runIds)}) GROUP BY agent_id`,
     runIds,
   )
-    .map((r) => ({ agent: String(r['agent_id']), n: Number(r['n']) }))
+    .map((r) => ({ agent: String(r['agent_id']), n: Number(r['n']), causes: summariseCauses(String(r['causes'] ?? '')) }))
     .filter((d) => {
       const h = hours.get(d.agent) ?? 0;
       return h >= 0.25 && d.n / h >= DEATHS_PER_HOUR;
@@ -470,8 +479,20 @@ function deaths(db: DatabaseSync, runIds: readonly string[]): Finding[] {
       check: 'deaths',
       severity: 'warn' as const,
       agent: d.agent,
-      message: `died ${d.n} times in ${(hours.get(d.agent) ?? 0).toFixed(1)}h`,
+      message: `died ${d.n} times in ${(hours.get(d.agent) ?? 0).toFixed(1)}h: ${d.causes}`,
     }));
+}
+
+/** "drowned|drowned|was shot by Skeleton" -> "drowned x2, was shot by Skeleton". */
+export function summariseCauses(joined: string): string {
+  const counts = new Map<string, number>();
+  for (const cause of joined.split('|').filter((c) => c !== '')) {
+    counts.set(cause, (counts.get(cause) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([cause, n]) => (n > 1 ? `${cause} x${n}` : cause))
+    .join(', ');
 }
 
 function loopHealth(db: DatabaseSync, runIds: readonly string[]): Finding[] {
