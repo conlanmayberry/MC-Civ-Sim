@@ -69,11 +69,82 @@ export const DEFAULT_MOVE_TIMEOUT_MS = 45_000;
  */
 const WATER_COST = 12;
 
-export function movementsFor(bot: Bot): InstanceType<typeof Movements> {
+/**
+ * Where this bot has recently wedged, so later paths route around the spot.
+ *
+ * In the 2026-09-16 session Dmitri wedged at the same village corner
+ * (1395,65,-140) sixteen times over half an hour, at one heart and no food,
+ * because every retry recomputed the same route through the same spot. A
+ * person who got stuck somewhere tries a different way next time.
+ */
+const WEDGE_MEMORY_MS = 10 * 60_000;
+const WEDGE_AVOID_COST = 40;
+const wedgeSpots = new WeakMap<Bot, Array<{ x: number; y: number; z: number; at: number }>>();
+
+export function rememberWedge(bot: Bot): void {
+  const p = bot.entity.position;
+  const now = Date.now();
+  const spots = (wedgeSpots.get(bot) ?? []).filter((s) => now - s.at < WEDGE_MEMORY_MS);
+  spots.push({ x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z), at: now });
+  wedgeSpots.set(bot, spots.slice(-20));
+}
+
+export function recentWedges(bot: Bot): Array<{ x: number; y: number; z: number }> {
+  const now = Date.now();
+  return (wedgeSpots.get(bot) ?? []).filter((s) => now - s.at < WEDGE_MEMORY_MS);
+}
+
+interface ExtraMovements {
+  liquidCost: number;
+  allowParkour: boolean;
+  allowSprinting: boolean;
+  exclusionAreasStep: Array<(block: { position?: Vec3 }) => number>;
+}
+
+/**
+ * Pathfinder settings for this bot.
+ *
+ * `careful` is for retries after a failed attempt: no parkour jumps and no
+ * sprinting. Both make paths shorter and both are how a bot overshoots a
+ * ledge, catches on a corner, or lands in water -- a fair trade on a first
+ * attempt, a bad one on a second.
+ */
+export function movementsFor(bot: Bot, careful = false): InstanceType<typeof Movements> {
   const movements = new Movements(bot);
   // Present at runtime (movements.js) but missing from the bundled typings.
-  (movements as unknown as { liquidCost: number }).liquidCost = WATER_COST;
+  const extra = movements as unknown as ExtraMovements;
+  extra.liquidCost = WATER_COST;
+  if (careful) {
+    extra.allowParkour = false;
+    extra.allowSprinting = false;
+  }
+  const spots = recentWedges(bot);
+  if (spots.length > 0) {
+    // pathfinder also passes placeholder blocks for unloaded space, which
+    // have no position; throwing here would crash the physics tick.
+    extra.exclusionAreasStep.push((block) => {
+      const p = block.position;
+      if (p === undefined) return 0;
+      return spots.some(
+        (s) => Math.abs(p.x - s.x) <= 1 && Math.abs(p.z - s.z) <= 1 && Math.abs(p.y - s.y) <= 2,
+      )
+        ? WEDGE_AVOID_COST
+        : 0;
+    });
+  }
   return movements;
+}
+
+/**
+ * The budget move_to gets when the caller does not set one.
+ *
+ * A flat 45s could not cover the moves agents actually ask for: 100-155m
+ * trips "timed out" while making steady progress, because walking that far
+ * takes longer than that. Roughly 3 m/s of useful progress once detours are
+ * counted, plus slack, capped so one move cannot hold the agent for minutes.
+ */
+export function moveBudgetMs(distance: number): number {
+  return Math.round(Math.min(120_000, Math.max(DEFAULT_MOVE_TIMEOUT_MS, 15_000 + (distance / 3) * 1_000)));
 }
 
 /**
@@ -84,11 +155,16 @@ export function movementsFor(bot: Bot): InstanceType<typeof Movements> {
  */
 async function pathfindTo(
   bot: Bot,
-  goal: InstanceType<typeof goals.GoalNear> | InstanceType<typeof goals.GoalFollow>,
+  goal:
+    | InstanceType<typeof goals.GoalNear>
+    | InstanceType<typeof goals.GoalFollow>
+    | InstanceType<typeof goals.GoalNearXZ>,
   signal: AbortSignal,
   timeoutMs: number,
-): Promise<{ outcome: 'reached' | 'wedged' | 'no_path' | 'aborted' | 'timeout'; detail: string }> {
-  bot.pathfinder.setMovements(movementsFor(bot));
+  careful = false,
+  leash: { target: Vec3; maxDistance: number } | null = null,
+): Promise<{ outcome: 'reached' | 'wedged' | 'no_path' | 'aborted' | 'timeout' | 'wandered'; detail: string }> {
+  bot.pathfinder.setMovements(movementsFor(bot, careful));
 
   let settled: 'reached' | 'no_path' | null = null;
   let pathError = '';
@@ -125,6 +201,16 @@ async function pathfindTo(
     await new Promise((r) => setTimeout(r, WATCH_INTERVAL_MS));
 
     const now = bot.entity.position;
+    // Traced from a bot stuck inside a hillside: every attempt led it further
+    // off, 85-100m in the wrong direction before the budget ran out. A detour
+    // that long is not a route to the target any more.
+    if (leash !== null && now.distanceTo(leash.target) > leash.maxDistance) {
+      bot.pathfinder.setGoal(null);
+      return {
+        outcome: 'wandered',
+        detail: `the path led ${round2(now.distanceTo(leash.target))}m away from the target, so it was abandoned`,
+      };
+    }
     // "Claims to be moving but is not" is the wedge signature. Either half
     // alone is normal -- a bot can pause while pathfinder recomputes, and it
     // can be still with no goal at all.
@@ -136,6 +222,7 @@ async function pathfindTo(
     last = now.clone();
 
     if (stalled >= WEDGE_SAMPLES) {
+      rememberWedge(bot);
       bot.pathfinder.setGoal(null);
       // Let the rejection land before the caller moves on.
       await new Promise((r) => setTimeout(r, 200));
@@ -173,8 +260,13 @@ export async function navigateTo(
   let outcome = 'no_path';
   let detail = '';
   let attempts = 0;
+  // Only attempts that got nowhere count against the retry limit. A long trip
+  // that hits the per-attempt cap while still closing in is going fine, and
+  // used to burn a retry each time until it "failed" mid-journey.
+  let failures = 0;
+  let lastWedge: Vec3 | null = null;
 
-  for (let attempt = 0; attempt <= WEDGE_RETRIES; attempt++) {
+  while (failures <= WEDGE_RETRIES) {
     attempts++;
     const remainingBudget = deadline - Date.now();
     if (remainingBudget <= 1_000) {
@@ -183,32 +275,85 @@ export async function navigateTo(
       break;
     }
 
+    const before = bot.entity.position.distanceTo(target);
     const result = await pathfindTo(
       bot,
       new goals.GoalNear(x, y, z, range),
       signal,
       Math.min(remainingBudget, MAX_ATTEMPT_MS),
+      failures > 0,
+      { target, maxDistance: before + Math.max(WANDER_SLACK, before) },
     );
     outcome = result.outcome;
     detail = result.detail;
 
     // A plain timeout is retried the same as a wedge: both are "this attempt
     // did not arrive", and a fresh path from a new position resolves each of
-    // them for the same reason. `no_path` is the one outcome retrying cannot
-    // fix -- pathfinder already concluded nothing connects the two points, and
-    // nothing about trying again changes that.
-    if (outcome !== 'wedged' && outcome !== 'timeout') break;
+    // them for the same reason. So is pathfinder giving up on THINKING --
+    // "took too long to decide" is about the search budget, not the world,
+    // and a search from a few blocks further on is a different search.
+    // Any other no_path is final: nothing connects the two points.
+    // A path that wandered off is final too: the next one would be computed
+    // from further away, through the same obstacle.
+    if (outcome === 'wandered') break;
+    const thinkingTimedOut = outcome === 'no_path' && isThinkingTimeout(detail);
+    if (outcome !== 'wedged' && outcome !== 'timeout' && !thinkingTimedOut) break;
     if (bot.entity.position.distanceTo(target) <= range + 1) {
       outcome = 'reached';
       break;
     }
     if (signal.aborted) break;
 
-    await unstick(bot);
+    const progressed = before - bot.entity.position.distanceTo(target) >= PROGRESS_WORTH_KEEPING;
+    if (!progressed) failures++;
+
+    if (outcome === 'wedged') {
+      const here = bot.entity.position.clone();
+      // Wedged twice in the same place: a fresh path from here keeps finding
+      // the same bad spot, so step well away from it first.
+      if (lastWedge !== null && lastWedge.distanceTo(here) < 3) {
+        await detour(bot, target, signal, Math.min(DETOUR_MS, deadline - Date.now()));
+      } else {
+        await unstick(bot);
+      }
+      lastWedge = here;
+    }
   }
 
   const remaining = bot.entity.position.distanceTo(target);
   return { ok: outcome === 'reached', outcome, detail, remaining: round2(remaining), attempts };
+}
+
+/** pathfinder's "Took to long to decide path to goal!" -- its own typo, matched loosely. */
+export function isThinkingTimeout(detail: string): boolean {
+  return /too? long to decide/i.test(detail);
+}
+
+/** How much further from the target than it started a path may lead, at least. */
+const WANDER_SLACK = 24;
+/** An attempt that closed this much distance was working, however it ended. */
+const PROGRESS_WORTH_KEEPING = 8;
+const DETOUR_MS = 8_000;
+
+/**
+ * Walk a few blocks off to one side of the line to the target.
+ *
+ * Which side is random: the point is only to approach the wedge spot from a
+ * different angle next time, with the spot itself now costed as a place to
+ * avoid (see rememberWedge).
+ */
+async function detour(bot: Bot, target: Vec3, signal: AbortSignal, budgetMs: number): Promise<void> {
+  if (budgetMs < 2_000) return;
+  const here = bot.entity.position;
+  const toward = target.minus(here);
+  const length = Math.hypot(toward.x, toward.z) || 1;
+  const side = Math.random() < 0.5 ? 1 : -1;
+  // Perpendicular in the horizontal plane, and a little back the way we came.
+  const px = (-toward.z / length) * side;
+  const pz = (toward.x / length) * side;
+  const dx = px * 6 - (toward.x / length) * 2;
+  const dz = pz * 6 - (toward.z / length) * 2;
+  await pathfindTo(bot, new goals.GoalNearXZ(here.x + dx, here.z + dz, 2), signal, budgetMs, true);
 }
 
 /** Hop and turn, to shake loose whatever geometry the wedge caught on. */
@@ -223,6 +368,161 @@ async function unstick(bot: Bot): Promise<void> {
   }
 }
 
+/**
+ * Where each player was last seen, per bot.
+ *
+ * follow_player and give_item used to fail outright the moment someone was
+ * out of entity range -- "cannot see Dmitri" 13 times in one session, with
+ * the agent standing where it had watched Dmitri walk off. A person would go
+ * to where they last saw them and look again. Only what this bot itself saw:
+ * nothing here knows where anyone is without having seen them.
+ */
+const LAST_SEEN_MAX_AGE_MS = 10 * 60_000;
+const lastSeenByBot = new WeakMap<Bot, Map<string, { position: Vec3; at: number }>>();
+
+export function trackPlayers(bot: Bot): () => void {
+  const seen = new Map<string, { position: Vec3; at: number }>();
+  lastSeenByBot.set(bot, seen);
+  const timer = setInterval(() => {
+    for (const [name, player] of Object.entries(bot.players)) {
+      if (name === bot.username || player.entity === undefined || player.entity === null) continue;
+      seen.set(name, { position: player.entity.position.clone(), at: Date.now() });
+    }
+  }, 1_000);
+  timer.unref();
+  bot.once('end', () => clearInterval(timer));
+  return () => clearInterval(timer);
+}
+
+export function lastSeen(bot: Bot, username: string): { position: Vec3; ageMs: number } | null {
+  const entry = lastSeenByBot.get(bot)?.get(username);
+  if (entry === undefined) return null;
+  const ageMs = Date.now() - entry.at;
+  return ageMs <= LAST_SEEN_MAX_AGE_MS ? { position: entry.position, ageMs } : null;
+}
+
+/** Budget for reaching a player: how far they are, or were last seen. */
+export function approachBudgetMs(bot: Bot, username: string): number {
+  const visible = bot.players[username]?.entity;
+  const where = visible?.position ?? lastSeen(bot, username)?.position ?? null;
+  return where === null ? DEFAULT_MOVE_TIMEOUT_MS : moveBudgetMs(bot.entity.position.distanceTo(where));
+}
+
+export type ApproachResult =
+  | { ok: true; startDistance: number; endDistance: number; searchedLastSeen: boolean }
+  | { ok: false; code: 'not_found' | 'unreachable' | 'timeout'; message: string };
+
+/**
+ * Get within `range` of a player, following them if they move.
+ *
+ * Shared by follow_player and give_item, which both need exactly this, and
+ * without the action mutex so give_item can use it while holding its own.
+ * Out of sight, it goes to where they were last seen and looks again.
+ */
+export async function approachPlayer(
+  bot: Bot,
+  username: string,
+  range: number,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<ApproachResult> {
+  const deadline = Date.now() + timeoutMs;
+  let searchedLastSeen = false;
+
+  if (bot.players[username]?.entity == null) {
+    const memory = lastSeen(bot, username);
+    if (memory === null) {
+      return {
+        ok: false,
+        code: 'not_found',
+        message:
+          `cannot see ${username}, and have not seen them in the last ${LAST_SEEN_MAX_AGE_MS / 60_000} minutes` +
+          ' -- they may be far away, in another dimension, or offline',
+      };
+    }
+    searchedLastSeen = true;
+    const p = memory.position;
+    await navigateTo(bot, p.x, p.y, p.z, 3, Math.max(5_000, deadline - Date.now() - 3_000), signal);
+    if (bot.players[username]?.entity == null) {
+      return {
+        ok: false,
+        code: 'not_found',
+        message:
+          `cannot see ${username}; went to where you last saw them ` +
+          `(${Math.round(p.x)}, ${Math.round(p.y)}, ${Math.round(p.z)}, ${Math.round(memory.ageMs / 1000)}s earlier) ` +
+          'and they are not there any more',
+      };
+    }
+  }
+
+  const first = bot.players[username]?.entity;
+  if (first == null) return { ok: false, code: 'not_found', message: `cannot see ${username}` };
+  const startDistance = bot.entity.position.distanceTo(first.position);
+
+  // Retried the same way moveTo is, and for the same reason: this used to be
+  // a single un-retried pathfindTo call, which made follow_player the
+  // worst-performing action in the tool surface (37.5% success, measured
+  // live) -- a target that is WALKING makes a wedge more likely, not less.
+  let outcome = 'no_path';
+  let detail = '';
+  let endDistance = startDistance;
+
+  for (let attempt = 0; attempt <= WEDGE_RETRIES; attempt++) {
+    const live = bot.players[username]?.entity;
+    if (live == null) {
+      outcome = 'no_path';
+      detail = 'they are no longer visible';
+      endDistance = Number.NaN;
+      break;
+    }
+    endDistance = bot.entity.position.distanceTo(live.position);
+    if (endDistance <= range + 1) {
+      outcome = 'reached';
+      break;
+    }
+
+    const remainingBudget = deadline - Date.now();
+    if (remainingBudget <= 1_000) {
+      outcome = 'timeout';
+      detail = 'ran out of time between retries';
+      break;
+    }
+
+    const result = await pathfindTo(
+      bot,
+      new goals.GoalFollow(live, range),
+      signal,
+      Math.min(remainingBudget, MAX_ATTEMPT_MS),
+      attempt > 0,
+    );
+    outcome = result.outcome;
+    detail = result.detail;
+
+    endDistance = bot.entity.position.distanceTo(live.position);
+    // GoalFollow never "completes" while the target keeps moving, so being
+    // within range counts as success even when goto did not resolve.
+    if (endDistance <= range + 1) {
+      outcome = 'reached';
+      break;
+    }
+
+    if (outcome !== 'wedged' && outcome !== 'timeout') break;
+    if (signal.aborted) break;
+    await unstick(bot);
+  }
+
+  if (outcome === 'reached') {
+    return { ok: true, startDistance: round2(startDistance), endDistance: round2(endDistance), searchedLastSeen };
+  }
+  return {
+    ok: false,
+    code: outcome === 'timeout' ? 'timeout' : 'unreachable',
+    message: `${outcome}${detail === '' ? '' : `: ${detail}`} (${
+      Number.isFinite(endDistance) ? `${round2(endDistance)}m away` : 'lost sight of them'
+    })`,
+  };
+}
+
 export function createMovementActions(ctx: ActionContext) {
   const { bot, log, runner } = ctx;
 
@@ -233,9 +533,10 @@ export function createMovementActions(ctx: ActionContext) {
       y: number,
       z: number,
       range = 1,
-      timeoutMs = DEFAULT_MOVE_TIMEOUT_MS,
+      timeoutMs?: number,
     ): Promise<ActionResult> {
-      return runner.run({ action: 'move_to', eventType: 'movement', timeoutMs }, async (signal) => {
+      const budget = timeoutMs ?? moveBudgetMs(bot.entity.position.distanceTo(new Vec3(x, y, z)));
+      return runner.run({ action: 'move_to', eventType: 'movement', timeoutMs: budget }, async (signal) => {
         if (![x, y, z].every(Number.isFinite)) {
           throw new ActionFailure('invalid_argument', 'coordinates must be finite numbers');
         }
@@ -250,7 +551,7 @@ export function createMovementActions(ctx: ActionContext) {
           y,
           z,
           range,
-          timeoutMs - 1_000,
+          budget - 1_000,
           signal,
         );
 
@@ -261,6 +562,14 @@ export function createMovementActions(ctx: ActionContext) {
           throw new ActionFailure(
             outcome === 'timeout' ? 'timeout' : 'unreachable',
             `${outcome} after ${attempts} attempt(s)${detail === '' ? '' : `: ${detail}`} (${round2(remaining)}m short)`,
+            {
+              from: toPosition(from),
+              to: toPosition(bot.entity.position),
+              requested: toPosition(target),
+              travelled: round2(startDistance - remaining),
+              remaining: round2(remaining),
+              attempts,
+            },
           );
         }
 
@@ -279,86 +588,25 @@ export function createMovementActions(ctx: ActionContext) {
     async followPlayer(
       username: string,
       range = 3,
-      timeoutMs = DEFAULT_MOVE_TIMEOUT_MS,
+      timeoutMs?: number,
     ): Promise<ActionResult> {
+      const budget = timeoutMs ?? approachBudgetMs(bot, username);
       return runner.run(
-        { action: 'follow_player', eventType: 'movement', timeoutMs },
+        { action: 'follow_player', eventType: 'movement', timeoutMs: budget },
         async (signal) => {
-          const first = bot.players[username]?.entity;
-          if (first === undefined || first === null) {
-            throw new ActionFailure('not_found', `cannot see ${username}`);
-          }
-          const startDistance = bot.entity.position.distanceTo(first.position);
-
-          // Retried the same way moveTo is, and for the same reason: this used
-          // to be a single un-retried pathfindTo call, which made it the
-          // worst-performing action in the tool surface (37.5% success,
-          // measured live) -- a target that is WALKING makes a wedge more
-          // likely to occur, not less, so this needed the retry more than
-          // moveTo did, not less.
-          const deadline = Date.now() + (timeoutMs - 1_000);
-          let outcome = 'no_path';
-          let detail = '';
-          let current = first;
-          let endDistance = startDistance;
-
-          for (let attempt = 0; attempt <= WEDGE_RETRIES; attempt++) {
-            const live = bot.players[username]?.entity;
-            if (live === undefined || live === null) {
-              // They were visible a moment ago and are not now -- report what
-              // is true right now rather than reasoning about the last attempt.
-              outcome = 'no_path';
-              detail = 'they are no longer visible';
-              current = first;
-              endDistance = Number.NaN;
-              break;
-            }
-            current = live;
-
-            const remainingBudget = deadline - Date.now();
-            if (remainingBudget <= 1_000) {
-              outcome = 'timeout';
-              detail = 'ran out of time between retries';
-              break;
-            }
-
-            const result = await pathfindTo(
-              bot,
-              new goals.GoalFollow(live, range),
-              signal,
-              Math.min(remainingBudget, MAX_ATTEMPT_MS),
-            );
-            outcome = result.outcome;
-            detail = result.detail;
-
-            endDistance = bot.entity.position.distanceTo(live.position);
-            // GoalFollow never "completes" while the target keeps moving, so
-            // being within range counts as success even when goto did not
-            // resolve on its own.
-            if (endDistance <= range + 1) {
-              outcome = 'reached';
-              break;
-            }
-
-            if (outcome !== 'wedged' && outcome !== 'timeout') break;
-            if (signal.aborted) break;
-            await unstick(bot);
-          }
-
-          if (outcome === 'reached') {
+          const result = await approachPlayer(bot, username, range, budget - 1_000, signal);
+          if (result.ok) {
             return {
               username,
-              startDistance: round2(startDistance),
-              endDistance: round2(endDistance),
+              startDistance: result.startDistance,
+              endDistance: result.endDistance,
+              ...(result.searchedLastSeen ? { foundVia: 'where you last saw them' } : {}),
             };
           }
-
-          throw new ActionFailure(
-            outcome === 'timeout' ? 'timeout' : 'unreachable',
-            `${outcome}${detail === '' ? '' : `: ${detail}`} (${
-              Number.isFinite(endDistance) ? `${round2(endDistance)}m away` : 'lost sight of them'
-            })`,
-          );
+          throw new ActionFailure(result.code, result.message, {
+            username,
+            position: toPosition(bot.entity.position),
+          });
         },
       );
     },

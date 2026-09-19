@@ -19,6 +19,7 @@
 import type { Bot } from 'mineflayer';
 
 import {
+  nearbyHostiles,
   observeBlocks,
   observeEntities,
   observeGroundProfile,
@@ -26,6 +27,7 @@ import {
   observePlaceableSpots,
   observeSelf,
 } from '../bot/observations.ts';
+import { lastSeen } from '../bot/actions/movement.ts';
 import type { AgentIdentity } from '../agent/identity.ts';
 import { toPromptFragment } from '../agent/identity.ts';
 import type { HeardMessage } from '../agent/hearing.ts';
@@ -245,6 +247,33 @@ export function buildObservation(
     lines.push(`Nearby: ${others.map((e) => `${e.name} at ${e.distance}m`).join(', ')}.`);
   }
 
+  // People out of sight, where this agent last saw them. It cannot know more
+  // than it has seen -- but it used to know less, and set off to find
+  // teammates with no idea which way they had gone.
+  const visibleNames = new Set(others.map((e) => e.username).filter((n): n is string => n !== null));
+  const remembered = Object.keys(bot.players ?? {})
+    .filter((name) => name !== bot.username && !visibleNames.has(name))
+    .map((name) => ({ name, seen: lastSeen(bot, name) }))
+    .filter((r): r is { name: string; seen: NonNullable<ReturnType<typeof lastSeen>> } => r.seen !== null);
+  if (remembered.length > 0) {
+    lines.push(
+      `Out of sight: ${remembered
+        .map(
+          ({ name, seen }) =>
+            `${name}, last seen ${describeAge(seen.ageMs)} at ${Math.round(seen.position.x)},${Math.round(seen.position.y)},${Math.round(seen.position.z)}`,
+        )
+        .join('; ')}.`,
+    );
+  }
+
+  const hostiles = nearbyHostiles(bot, ENTITY_RADIUS);
+  if (hostiles.length > 0) {
+    lines.push(
+      `Danger: ${hostiles.map((h) => `${h.name} ${h.distance}m`).join(', ')}. ` +
+        'Fight with attack_entity, or put distance or a wall between you.',
+    );
+  }
+
   if (drops.length > 0) {
     lines.push(
       `On the ground within reach: ${drops
@@ -324,11 +353,40 @@ export function buildObservation(
 
   if (self.health <= 10) pressures.push('You are hurt.');
   if (!self.isDay) pressures.push('It is dark; hostile mobs spawn at night.');
+  else {
+    const minutes = minutesToNightfall(self.timeOfDay);
+    if (minutes !== null) pressures.push(`Night falls in about ${minutes} minute${minutes === 1 ? '' : 's'}.`);
+  }
+
+  // A full inventory drops pickups on the floor without any error: mining,
+  // hunting and handovers all "succeed" and nothing arrives.
+  if (inventory.emptySlots <= 2) {
+    pressures.push(
+      `Your inventory is nearly full (${inventory.emptySlots} free slot${inventory.emptySlots === 1 ? '' : 's'}) -- ` +
+        'new pickups will be left on the ground. Store things in a chest or give them away.',
+    );
+  }
 
   const text = pressures.filter((p) => p !== '').join(' ');
   if (text !== '') lines.push(text);
 
   return lines.join('\n');
+}
+
+/** Dusk starts at 12,000 ticks and mobs at about 13,000; a day is 20 minutes of 24,000. */
+const DUSK_TICKS = 13_000;
+const WARN_BEFORE_TICKS = 3_600;
+
+/** Minutes until mobs start spawning, when that is within about three minutes. */
+export function minutesToNightfall(timeOfDay: number): number | null {
+  const left = DUSK_TICKS - timeOfDay;
+  if (left <= 0 || left > WARN_BEFORE_TICKS) return null;
+  return Math.max(1, Math.round(left / 1_200));
+}
+
+export function describeAge(ms: number): string {
+  const seconds = Math.round(ms / 1_000);
+  return seconds < 60 ? `${seconds}s ago` : `${Math.round(seconds / 60)} min ago`;
 }
 
 /** Keeps the last N history entries, so prompt size stays flat over a long run. */

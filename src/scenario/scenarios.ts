@@ -416,14 +416,24 @@ const surfaceForAir: Scenario = {
       died = true;
     });
 
-    // Walk the pool floor, as a bot pathing along a lake bed would. That the
-    // reflex also takes the body from a RUNNING action is covered in run.test.ts.
-    const corner = at(2, 2);
-    const busy = a.actions.moveTo(corner.x, corner.y, corner.z, 0, 40_000);
+    // Busy and standing still on the bottom: smelting at a furnace on the
+    // pool floor. An idle bot treads water by itself, and a moving one may or
+    // may not go under depending on its path, so neither reliably tests the
+    // case the reflex exists for -- an action holding the bot down.
+    await arena.setBlock(at(1, 0), 'furnace');
+    await arena.give(a.name, 'beef', 8);
+    await arena.give(a.name, 'coal', 1);
+    const busy = a.actions.smeltItem('beef', 8);
     // Unaided, a bot at the bottom drowns in about 25s; give it longer.
+    // Sampling starts after a moment: mineflayer reports 0 air until the
+    // server first sends the real value, which is not the bot drowning.
     let lowest = 20;
+    let lowestHealth = a.bot.health;
+    const sampleFrom = Date.now() + 1_500;
     const watch = setInterval(() => {
+      if (Date.now() < sampleFrom) return;
       lowest = Math.min(lowest, a.bot.oxygenLevel);
+      lowestHealth = Math.min(lowestHealth, a.bot.health);
     }, 250);
     await until(() => died, 35_000, 250);
     clearInterval(watch);
@@ -431,12 +441,13 @@ const surfaceForAir: Scenario = {
 
     if (died) return fail(`drowned (reflexes: ${reflexes.length}, move: ${describeFailure(move)})`);
     if (reflexes.some((r) => r.includes('could not reach air'))) return fail(`reflex gave up: ${reflexes.join(' / ')}`);
+    // Air at zero is drowning. Health alone would mislead: a bump against the
+    // pool wall on arrival cost a point once, with air never below 16.
+    if (lowest <= 0) return fail(`ran out of air (health fell to ${lowestHealth})`);
     // Either the reflex pulled it up mid-move, or, once idle, it kept itself
     // afloat before air ran low. Both are the point: it did not drown.
-    return pass(
-      `alive after 35s, air never below ${lowest}/20; ` +
-        (reflexes.length > 0 ? `reflex fired, move ended ${describeFailure(move)}` : 'stayed afloat without needing the reflex'),
-    );
+    if (reflexes.length === 0) return fail(`the reflex never fired; smelt_item ended ${describeFailure(move)}`);
+    return pass(`alive, air never below ${lowest}/20; reflex fired and smelt_item ended ${describeFailure(move)}`);
   },
 };
 
@@ -466,6 +477,113 @@ const huntCow: Scenario = {
     return beef > 0
       ? pass(`killed in ${String(attack.detail['hits'])} hit(s), collected ${beef} beef`)
       : fail(`killed the cow but collected no beef`);
+  },
+};
+
+/** Cooking: raw beef restores 3 hunger, cooked 8. */
+const smeltBeef: Scenario = {
+  id: 'smelt_beef',
+  title: 'smelt_item places a carried furnace and cooks beef',
+  live: false,
+  timeoutMs: 90_000,
+  async run({ arena }) {
+    const a = await arena.spawn('ScenAlpha', at(0, 0));
+    await arena.give(a.name, 'beef', 3);
+    await arena.give(a.name, 'coal', 1);
+    await arena.give(a.name, 'furnace', 1);
+
+    const smelt = await a.actions.smeltItem('beef', 3);
+    const cooked = countItem(a.bot, 'cooked_beef');
+    return cooked === 3
+      ? pass(`3 cooked_beef in ${(smelt.durationMs / 1000).toFixed(1)}s`)
+      : fail(`holding ${cooked}/3 cooked_beef; smelt_item said ${describeFailure(smelt)} ${JSON.stringify(smelt.detail)}`);
+  },
+};
+
+/** A handover that does not need both people there at once. */
+const chestRoundTrip: Scenario = {
+  id: 'chest_round_trip',
+  title: 'store_items and take_items move bread through a chest',
+  live: false,
+  timeoutMs: 60_000,
+  async run({ arena }) {
+    await arena.setBlock(at(4, 0), 'chest');
+    const a = await arena.spawn('ScenAlpha', at(-4, 0));
+    await arena.give(a.name, 'bread', 5);
+
+    const store = await a.actions.storeItems('bread', null);
+    if (!store.ok) return fail(`store_items: ${describeFailure(store)}`);
+    if (countItem(a.bot, 'bread') !== 0) return fail(`still holding ${countItem(a.bot, 'bread')} bread after storing all`);
+
+    const look = await a.actions.takeItems(null, null);
+    const take = await a.actions.takeItems('bread', 2);
+    const held = countItem(a.bot, 'bread');
+    return take.ok && held === 2
+      ? pass(`stored 5, looked (${String(look.detail['contents'])}), took back 2`)
+      : fail(`holding ${held}/2 bread; take_items said ${describeFailure(take)}`);
+  },
+};
+
+/** Placing into your own space: it used to refuse and cost a whole turn. */
+const placeStepsAside: Scenario = {
+  id: 'place_steps_aside',
+  title: 'place_block steps aside to place where the bot is standing',
+  live: false,
+  timeoutMs: 45_000,
+  async run({ arena }) {
+    const spot = at(0, 0);
+    const a = await arena.spawn('ScenAlpha', spot);
+    await arena.give(a.name, 'cobblestone', 1);
+
+    const place = await a.actions.placeBlock('cobblestone', spot.x, spot.y, spot.z);
+    const block = a.bot.blockAt(new Vec3(spot.x, spot.y, spot.z));
+    return place.ok && block?.name === 'cobblestone'
+      ? pass('stepped aside and placed it')
+      : fail(`place_block said ${describeFailure(place)}; the spot holds ${block?.name ?? 'nothing loaded'}`);
+  },
+};
+
+/** Re-placing what is already there is not a failure; placing into the ground says where the air is. */
+const placeOccupied: Scenario = {
+  id: 'place_occupied',
+  title: 'place_block: same block already there is ok; a different one points at the air above',
+  live: false,
+  timeoutMs: 30_000,
+  async run({ arena }) {
+    const spot = at(3, 0);
+    await arena.setBlock(spot, 'cobblestone');
+    const a = await arena.spawn('ScenAlpha', at(0, 0));
+    await arena.give(a.name, 'cobblestone', 1);
+    await arena.give(a.name, 'dirt', 1);
+
+    const same = await a.actions.placeBlock('cobblestone', spot.x, spot.y, spot.z);
+    if (!same.ok || same.detail['alreadyThere'] !== true) return fail(`same block: ${describeFailure(same)}`);
+    if (countItem(a.bot, 'cobblestone') !== 1) return fail('a cobblestone was used up placing nothing');
+
+    const other = await a.actions.placeBlock('dirt', spot.x, spot.y, spot.z);
+    const hinted = !other.ok && other.error?.message.includes(`${spot.x},${spot.y + 1},${spot.z}`) === true;
+    return hinted
+      ? pass('already-there was ok and free; the occupied spot named the air above it')
+      : fail(`different block: ${describeFailure(other)}`);
+  },
+};
+
+/** "no wheat" used to be all it said, 46 times in one session, with cows in sight. */
+const notFoundSuggests: Scenario = {
+  id: 'not_found_suggests',
+  title: 'mine_block not_found for a crop names huntable animals nearby',
+  live: false,
+  timeoutMs: 30_000,
+  async run({ arena }) {
+    const a = await arena.spawn('ScenAlpha', at(0, 0));
+    const cow = at(6, 0);
+    await arena.run(`summon minecraft:cow ${cow.x} ${cow.y} ${cow.z}`);
+    await sleep(1_000);
+
+    const mine = await a.actions.mineBlock('wheat', 1, 16);
+    return !mine.ok && mine.error?.code === 'not_found' && mine.error.message.includes('cow')
+      ? pass(mine.error.message)
+      : fail(`mine_block said ${describeFailure(mine)}`);
   },
 };
 
@@ -621,6 +739,67 @@ const agentFeedsHungryPeer: Scenario = {
   },
 };
 
+/**
+ * Being attacked, and answering.
+ *
+ * On 2026-09-16 one skeleton killed all four agents in 29 seconds while each
+ * was mid-conversation: nothing woke them for damage above half health, and
+ * nothing let them fight. A husk because, unlike a zombie, it does not burn
+ * in the arena's permanent daylight.
+ */
+const agentFightsBack: Scenario = {
+  id: 'agent_fights_back',
+  title: 'an agent attacked by a husk fights back and survives',
+  live: true,
+  timeoutMs: 150_000,
+  async run({ arena, provider }) {
+    if (provider === null) return { verdict: 'skip', detail: 'needs --live' };
+
+    const live = await startAgents(arena, provider, [{ username: 'ScenAgentA', where: at(-6, 0) }]);
+    const [agent] = live;
+    if (agent === undefined) return fail('setup: agent did not start');
+
+    try {
+      await arena.give(agent.bot.name, 'stone_sword', 1);
+      // Counted, so a husk dying of anything else cannot pass for a fight.
+      const attacks: string[] = [];
+      const attackEntity = agent.bot.actions.attackEntity;
+      agent.bot.actions.attackEntity = async (target, timeoutMs) => {
+        const result = await attackEntity(target, timeoutMs);
+        attacks.push(`${target}:${result.ok ? 'ok' : (result.error?.code ?? 'failed')}`);
+        return result;
+      };
+      let died = false;
+      agent.bot.bot.once('death', () => {
+        died = true;
+      });
+      const husk = at(4, 0);
+      await arena.run(`summon minecraft:husk ${husk.x} ${husk.y} ${husk.z}`);
+      await sleep(1_500);
+
+      // Asked of the server: mineflayer can keep a dead mob in its entity
+      // list (seen with a cow in hunt_cow), which would read as still alive.
+      let huskAlive = true;
+      const deadline = Date.now() + 110_000;
+      while (Date.now() < deadline && !died && huskAlive) {
+        await sleep(2_000);
+        const found = await arena.rcon.command(
+          `execute if entity @e[type=minecraft:husk,x=${ARENA.x},y=${ARENA.y + 1},z=${ARENA.z},distance=..40]`,
+        );
+        huskAlive = /passed/i.test(found);
+      }
+      const over = !huskAlive;
+
+      if (died) return fail(`the agent was killed by the husk (attacks: ${attacks.join(', ') || 'none'})`);
+      if (!over) return fail(`husk still alive after 110s; agent health ${agent.bot.bot.health}`);
+      if (attacks.length === 0) return fail('the husk died, but not from anything the agent did');
+      return pass(`husk killed with attack_entity (${attacks.join(', ')}); agent at ${agent.bot.bot.health}/20 health`);
+    } finally {
+      await stopAgents(live);
+    }
+  },
+};
+
 export const SCENARIOS: readonly Scenario[] = [
   handoverAdjacent,
   handoverWalks,
@@ -635,8 +814,14 @@ export const SCENARIOS: readonly Scenario[] = [
   eatWhenHungry,
   surfaceForAir,
   huntCow,
+  smeltBeef,
+  chestRoundTrip,
+  placeStepsAside,
+  placeOccupied,
+  notFoundSuggests,
   agentsAnswerGroupCall,
   agentFeedsHungryPeer,
+  agentFightsBack,
 ];
 
 /** What a verdict change between runs means, in one word. */

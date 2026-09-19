@@ -93,11 +93,19 @@ export function startReflexes(bot: Bot, runner: ActionRunner, log: Logger): Refl
       if (inWater && !runner.busy()) {
         bot.setControlState('jump', true);
         treading = true;
-      } else if (treading && !inWater) {
+      } else if (treading) {
+        // Out of the water, or an action has started: let go, or a craft in
+        // shallow water would be done bouncing.
         bot.setControlState('jump', false);
         treading = false;
       }
-      if (!underwater || bot.oxygenLevel > SURFACE_BELOW_OXYGEN) return;
+      // Air falling is the server's own verdict that the head is under. The
+      // block check alone missed it once in the arena: a bot swimming in the
+      // low swimming pose has its eyes well below where mineflayer puts them
+      // (it does not track pose), so air ran down to 8 with "head" in the air
+      // block above. In water with air going, that is enough. (Not air alone:
+      // mineflayer reads 0 until the server first sends it.)
+      if (!(underwater || inWater) || bot.oxygenLevel > SURFACE_BELOW_OXYGEN) return;
       engagedAt = Date.now();
       lastTurn = engagedAt;
       lowestOxygen = bot.oxygenLevel;

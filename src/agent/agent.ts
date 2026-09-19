@@ -20,6 +20,7 @@ import type { Bot } from 'mineflayer';
 
 import type { ActionResult, Actions } from '../bot/actions/index.ts';
 import { DEATH_CAUSE_WAIT_MS, watchDeathCauses } from '../bot/death.ts';
+import { nearbyHostiles } from '../bot/observations.ts';
 import type { Logger } from '../util/log.ts';
 import type { Budget } from '../ai/budget.ts';
 import { backoffMs, classifyProviderError } from '../ai/errors.ts';
@@ -102,6 +103,24 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 /** Hunger and health thresholds that justify thinking early. */
 const LOW_FOOD = 6;
+/** Wake at most this often for threats, so a mob does not become a chat storm of its own. */
+const THREAT_NUDGE_MS = 15_000;
+/** A hostile this close when damage lands is taken to be the attacker. Skeletons shoot from ~15. */
+const ATTACKER_RADIUS = 20;
+/** Actions worth abandoning when something starts hitting you. */
+const INTERRUPTIBLE_BY_ATTACK = new Set([
+  'mine_block',
+  'place_block',
+  'craft_item',
+  'collect_items',
+  'smelt_item',
+  'store_items',
+  'take_items',
+]);
+/** At most one early turn this often for a mob that has not attacked yet. */
+const APPROACH_NUDGE_MS = 60_000;
+/** A hostile this close is worth a (non-urgent) look before it attacks. */
+const APPROACH_RADIUS = 10;
 const LOW_HEALTH = 10;
 /**
  * Give up after this many failures in a row.
@@ -451,7 +470,10 @@ export function createAgent(options: AgentOptions): Agent {
       // attempt works -- a setback is a fact about a moment, not a law.
       if (result.ok) {
         setbacks.succeeded(call.name, call.args);
-      } else {
+      } else if (result.error?.code !== 'interrupted') {
+        // An interruption -- swimming up for air, being attacked, a newer
+        // order -- says nothing about whether the attempt itself works, and
+        // as a setback it would refuse the very retry that should follow.
         setbacks.record(
           call.name,
           call.args,
@@ -521,10 +543,49 @@ export function createAgent(options: AgentOptions): Agent {
 
     async run(bot, actions) {
       // React to things worth reacting to, rather than only to the clock.
+      let lastHealth = bot.health;
+      let lastThreatNudge = 0;
+      const warnedAbout = new Set<number>();
       bot.on('health', () => {
+        const hurt = bot.health < lastHealth;
+        lastHealth = bot.health;
+        // Being hit by something is news worth cutting a plan short for, at
+        // any health. It used to wake the agent only below half health, by
+        // which point a skeleton has usually finished the job.
+        if (hurt && bot.health > 0 && Date.now() - lastThreatNudge > THREAT_NUDGE_MS) {
+          const attacker = nearbyHostiles(bot, ATTACKER_RADIUS)[0];
+          if (attacker !== undefined) {
+            lastThreatNudge = Date.now();
+            const reason = `attacked by ${attacker.name} ${attacker.distance}m away`;
+            // Chores stop so the agent can answer; a move or a fight may
+            // already BE the answer, so those carry on.
+            const running = actions.current();
+            if (running !== null && INTERRUPTIBLE_BY_ATTACK.has(running)) actions.interrupt(reason);
+            nudge(reason, true);
+            return;
+          }
+        }
         if (bot.food <= LOW_FOOD) nudge('hungry');
         else if (bot.health <= LOW_HEALTH) nudge('hurt');
       });
+      // A hostile closing in, noticed before it attacks -- once per mob, and
+      // not more often than the threat nudge itself.
+      // Rarer than being hit: at night new mobs keep arriving, and a turn
+      // every fifteen seconds for each would roughly double what an agent
+      // costs to run, for news that is also in the next observation anyway.
+      let lastApproachNudge = 0;
+      const watchThreats = setInterval(() => {
+        if (bot.entity === undefined) return;
+        if (Date.now() - lastThreatNudge <= THREAT_NUDGE_MS || Date.now() - lastApproachNudge <= APPROACH_NUDGE_MS) return;
+        const incoming = nearbyHostiles(bot, APPROACH_RADIUS).find((h) => !warnedAbout.has(h.id));
+        if (incoming === undefined) return;
+        if (warnedAbout.size > 500) warnedAbout.clear();
+        warnedAbout.add(incoming.id);
+        lastApproachNudge = Date.now();
+        nudge(`${incoming.name} approaching, ${incoming.distance}m away`, false);
+      }, 1_000);
+      watchThreats.unref();
+      bot.once('end', () => clearInterval(watchThreats));
       const deathCauses = watchDeathCauses(bot);
       bot.on('death', () => {
         // Position taken now, while it is still the one it died at. Where you

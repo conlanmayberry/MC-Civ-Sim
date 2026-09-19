@@ -144,7 +144,9 @@ export const TOOL_SCHEMAS: readonly ToolSchema[] = [
       'in one call rather than one at a time -- one drop they collect once ' +
       'beats five drops rotting in a pile. If you can still see what you gave ' +
       'lying on the ground, they have not picked it up yet, and dropping more ' +
-      'on top of it will not help. Fails with not_found if you cannot see them.',
+      'on top of it will not help. If they are out of sight it goes to where ' +
+      'you last saw them. For someone who is not nearby, a chest (store_items) ' +
+      'works without both of you being in the same place at once.',
     parameters: object({
       item: str('Item name, e.g. bread, spruce_planks.'),
       count: int('How many to give.'),
@@ -162,6 +164,44 @@ export const TOOL_SCHEMAS: readonly ToolSchema[] = [
       'with not_found if none is within 24 blocks.',
     parameters: object({
       target: str('Creature type, e.g. cow, zombie.'),
+    }),
+  },
+  {
+    name: 'smelt_item',
+    description:
+      'Cook or smelt items in a furnace: raw meat into cooked (cooked beef ' +
+      'restores 8 hunger, raw only 3), raw_iron into iron_ingot, sand into ' +
+      'glass, logs into charcoal. Uses a furnace within 16 blocks, or places ' +
+      'the one you carry; burns coal, charcoal, planks, sticks or logs from ' +
+      'your inventory. Waits up to a minute and takes out what is done; ' +
+      'anything unfinished keeps cooking, and calling this again at the same ' +
+      'furnace collects it.',
+    parameters: object({
+      item: str('What to cook or smelt, e.g. beef, raw_iron.'),
+      count: int('How many.'),
+    }),
+  },
+  {
+    name: 'store_items',
+    description:
+      'Put items into the nearest chest or barrel (within 16 blocks), walking ' +
+      'over first. A chest is how to share with someone who is not standing ' +
+      'next to you, and how a group keeps a stockpile: unlike a drop on the ' +
+      'ground, nothing in a chest disappears. Remember where it is with ' +
+      'remember_place. Reports what the chest now holds.',
+    parameters: object({
+      item: str('Item name.'),
+      count: nullableInt('How many; null stores all you carry.'),
+    }),
+  },
+  {
+    name: 'take_items',
+    description:
+      'Take items out of the nearest chest or barrel (within 16 blocks). Pass ' +
+      'item null to just look inside without taking anything.',
+    parameters: object({
+      item: nullableStr('Item name, or null to only look.'),
+      count: nullableInt('How many; null takes all of that item.'),
     }),
   },
   {
@@ -324,6 +364,21 @@ export async function invokeTool(
 
       case 'attack_entity':
         return await actions.attackEntity(reqStr(args['target'], 'target'));
+
+      case 'smelt_item':
+        return await actions.smeltItem(reqStr(args['item'], 'item'), reqInt(args['count'], 'count'));
+
+      case 'store_items':
+        return await actions.storeItems(
+          reqStr(args['item'], 'item'),
+          typeof args['count'] === 'number' ? Math.trunc(args['count']) : null,
+        );
+
+      case 'take_items':
+        return await actions.takeItems(
+          typeof args['item'] === 'string' && args['item'].trim() !== '' ? args['item'].trim() : null,
+          typeof args['count'] === 'number' ? Math.trunc(args['count']) : null,
+        );
 
       case 'set_goal': {
         const goal = reqStr(args['goal'], 'goal').slice(0, 200);

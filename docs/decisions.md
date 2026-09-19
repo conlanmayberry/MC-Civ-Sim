@@ -729,3 +729,60 @@ model of the window without waiting for confirmation. The root cause is not
 confirmed -- it is not a window-contents race, not timing, and not inventory
 desync, all measured -- but it clears within eight attempts and a rejected
 attempt consumes nothing, so craft_item now retries exactly that case.
+
+## ADR-013 — One reflex, and a wider tool surface for staying alive
+
+**Date:** 2026-09-19 (Stage 5)
+**Status:** accepted
+
+### The problem
+
+The first four-agent session after the harness landed (2026-09-16, 91 minutes)
+lost 33 lives. The server log, not telemetry, said why: 28 drownings, 4 to a
+single skeleton, 1 suffocation. Telemetry had no death causes, so the doctor
+guessed from the food bar and called several of them starvation.
+
+The rest of that session was a food famine. There was no way to kill an
+animal, so four agents ate ten sweet berries between them in an hour and a
+half, and spent their turns asking each other for food none of them had.
+
+### Decisions
+
+**Exactly one reflex: surfacing for air** (`src/bot/reflexes.ts`). The model saw
+its oxygen every turn, but it thinks every few seconds and a single move can run
+for a minute. No decision is needed not to drown, so the body does it: it takes
+the controls from whatever action holds them (`ActionRunner.hold`), swims up,
+and tells the agent afterwards. Idle bots in water tread water. This is the
+*only* reflex on purpose -- whether to flee or fight, and when to eat, stay the
+model's choices, because those are the behaviours being studied.
+
+**The tool surface grows by four**, each a Minecraft interaction and nothing
+outside the world: `attack_entity` (creatures only -- attacking players or
+agents is refused, since whether agents can hurt each other is a question about
+the experiment and deserves its own decision), `smelt_item`, `store_items` and
+`take_items`. Chests matter as much as food: a drop on the ground is a handover
+both people must be present for, and 4 of 4 to one agent were never collected.
+
+**Being hit wakes the agent at any health**, and cuts chores (mining, crafting,
+placing) short so it can answer. Moves and fights carry on: they may already
+be the answer. An interruption is not recorded as a setback, because it says
+nothing about whether the interrupted attempt works.
+
+**Movement learns where it got stuck.** Wedge spots are remembered for ten
+minutes and costed by pathfinder; retries go without parkour or sprinting; a
+second wedge in the same place detours sideways first; long trips get a budget
+that scales with distance; and an attempt that leads far from its target is
+abandoned. One village corner had caught two agents 32 times in one session.
+
+**Deaths record the server's own cause**, and the doctor gained checks for the
+new failure shapes: movement hotspots, the reflex failing or firing often, and
+deaths to mobs with no attempt to fight.
+
+### Found while building it
+
+A pathfinder cost function that read `block.position` crashed on the
+placeholder blocks pathfinder passes for unloaded space -- inside the physics
+tick, which would have taken the agent process down. It surfaced in an arena
+trace before any agent ran it. Several arena traces also contradicted
+assumptions: mineflayer on 1.21.8 can keep a killed mob in its entity list with
+no death event, so kills are recognised by the drops appearing where it stood.

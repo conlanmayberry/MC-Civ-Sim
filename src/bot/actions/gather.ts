@@ -64,6 +64,17 @@ const MAX_DROPS_PER_SWEEP = 12;
  * decision, where a single stuck call consumes the whole turn.
  */
 export const DEFAULT_MINE_TIMEOUT_MS = 45_000;
+
+/** Blocks agents go looking for as food. */
+const FOOD_BLOCKS = new Set([
+  'wheat', 'carrots', 'potatoes', 'beetroots', 'sweet_berry_bush', 'melon', 'pumpkin', 'hay_block', 'cocoa',
+]);
+const FOOD_ANIMALS = new Set(['cow', 'pig', 'sheep', 'chicken', 'rabbit', 'mooshroom', 'goat']);
+/** Block names that come in kinds worth offering one another as substitutes. */
+const FAMILIES = new Set(['log', 'planks', 'ore', 'wool', 'leaves', 'stone', 'sand', 'terracotta']);
+const ALTERNATIVE_RADIUS = 32;
+/** Time mine_block keeps back from digging for collecting what it dug. */
+const SWEEP_RESERVE_MS = 6_000;
 export const DEFAULT_COLLECT_TIMEOUT_MS = 30_000;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -104,6 +115,59 @@ function totalItems(bot: Bot): number {
 
 export function createGatherActions(ctx: ActionContext) {
   const { bot, runner } = ctx;
+
+  /**
+   * What IS around, when what was asked for is not.
+   *
+   * 46 mine_block calls in one session searched for crops that did not exist
+   * -- wheat, carrots, potatoes, hay -- at radii from 8 to 150, while cows and
+   * sheep wandered past. "not found" alone says to look harder; this says what
+   * to do instead.
+   */
+  function describeAlternatives(blockName: string): string {
+    const parts: string[] = [];
+
+    if (FOOD_BLOCKS.has(blockName)) {
+      const animals = Object.values(bot.entities)
+        .filter((e) => e.name !== undefined && FOOD_ANIMALS.has(e.name) && e.isValid)
+        .map((e) => ({ name: e.name as string, distance: e.position.distanceTo(bot.entity.position) }))
+        .filter((a) => a.distance <= ALTERNATIVE_RADIUS)
+        .sort((a, b) => a.distance - b.distance)
+        .slice(0, 4);
+      if (animals.length > 0) {
+        parts.push(
+          `animals you could hunt for food instead: ${animals.map((a) => `${a.name} ${Math.round(a.distance)}m`).join(', ')} (attack_entity)`,
+        );
+      }
+    }
+
+    // Same family, different kind: no oak_log, but spruce_log in sight.
+    const suffix = blockName.split('_').at(-1) ?? '';
+    if (FAMILIES.has(suffix)) {
+      const relatives = Object.values(bot.registry.blocksByName).filter(
+        (b) => b.name !== blockName && b.name.endsWith(`_${suffix}`),
+      );
+      const ids = new Set(relatives.map((b) => b.id));
+      const seen = new Map<string, number>();
+      for (const position of bot.findBlocks({ matching: [...ids], maxDistance: ALTERNATIVE_RADIUS, count: 40 })) {
+        const block = bot.blockAt(position);
+        if (block === null) continue;
+        const distance = position.distanceTo(bot.entity.position);
+        if (!seen.has(block.name) || distance < (seen.get(block.name) ?? Infinity)) seen.set(block.name, distance);
+      }
+      if (seen.size > 0) {
+        parts.push(
+          `similar blocks nearby: ${[...seen.entries()]
+            .sort((a, b) => a[1] - b[1])
+            .slice(0, 4)
+            .map(([name, d]) => `${name} ${Math.round(d)}m`)
+            .join(', ')}`,
+        );
+      }
+    }
+
+    return parts.join('; ');
+  }
 
   async function approach(block: Block, timeoutMs: number, signal: AbortSignal): Promise<void> {
     // mineflayer's own reach test is the only one that matters -- it is what
@@ -162,13 +226,18 @@ export function createGatherActions(ctx: ActionContext) {
 
       const target = nearest.position.clone();
       attempts.set(nearest.id, (attempts.get(nearest.id) ?? 0) + 1);
-      const budget = (): number => Math.max(4_000, Math.min(12_000, deadline - Date.now()));
+      // Strictly inside the deadline. This used to be at least 4s whatever was
+      // left, which ran the action into the runner's own timeout -- and a
+      // runner timeout throws away everything already picked up from the
+      // report (collect_items "exceeded 30000ms", 19 times).
+      const budget = (): number => Math.min(12_000, deadline - Date.now());
+      if (budget() < 1_500) break;
       // Onto the drop's own block, not merely near it. Range 1 counts as
       // arrived from a neighbouring block, which is often just outside
       // vanilla's pickup box. Range 1 remains the fallback for a drop whose
       // block cannot be stood in.
       let nav = await navigateTo(bot, target.x, target.y, target.z, 0, budget(), signal);
-      if (!nav.ok && !signal.aborted) {
+      if (!nav.ok && !signal.aborted && budget() >= 1_500) {
         nav = await navigateTo(bot, target.x, target.y, target.z, 1, budget(), signal);
       }
       visited++;
@@ -211,7 +280,12 @@ export function createGatherActions(ctx: ActionContext) {
 
           const before = inventorySnapshot(bot);
           const positions: Array<Record<string, number>> = [];
-          const deadline = Date.now() + timeoutMs - 3_000;
+          // Two deadlines: digging stops at the first, leaving the rest for
+          // picking up what was dug. Overrunning into the runner's timeout
+          // discards the whole result -- "exceeded 45000ms" nine times in one
+          // session, including runs that had already mined blocks.
+          const finish = Date.now() + timeoutMs - 1_500;
+          const deadline = finish - SWEEP_RESERVE_MS;
 
           for (let i = 0; i < count; i++) {
             if (signal.aborted) break;
@@ -233,7 +307,11 @@ export function createGatherActions(ctx: ActionContext) {
             if (candidates.length === 0) {
               // Partial success is still success: report what we got.
               if (positions.length > 0) break;
-              throw new ActionFailure('not_found', `no ${blockName} within ${searchRadius} blocks`);
+              const alternatives = describeAlternatives(blockName);
+              throw new ActionFailure(
+                'not_found',
+                `no ${blockName} within ${searchRadius} blocks${alternatives === '' ? '' : ` -- ${alternatives}`}`,
+              );
             }
 
             let fresh: Block | null = null;
@@ -241,7 +319,9 @@ export function createGatherActions(ctx: ActionContext) {
             for (const candidate of candidates) {
               if (Date.now() > deadline || signal.aborted) break;
               try {
-                await approach(candidate, Math.max(5_000, deadline - Date.now()), signal);
+                const left = deadline - Date.now();
+                if (left < 2_000) break;
+                await approach(candidate, left, signal);
               } catch (err) {
                 lastReachError = err instanceof Error ? err.message : String(err);
                 continue; // Try the next tree.
@@ -257,6 +337,9 @@ export function createGatherActions(ctx: ActionContext) {
 
             if (fresh === null) {
               if (positions.length > 0) break;
+              if (deadline - Date.now() < 2_000 && lastReachError === '') {
+                throw new ActionFailure('timeout', `ran out of time walking to the nearest ${blockName}`);
+              }
               throw new ActionFailure(
                 'unreachable',
                 `none of the ${candidates.length} nearest ${blockName} could be reached` +
@@ -310,7 +393,7 @@ export function createGatherActions(ctx: ActionContext) {
             await sleep(DROP_SETTLE_MS);
           }
 
-          const sweep = await sweepDrops(6, Math.min(8_000, Math.max(2_000, deadline - Date.now())), signal);
+          const sweep = await sweepDrops(6, Math.min(8_000, finish - Date.now()), signal);
 
           // Report what was actually collected, by item name. The model needs
           // to know it got cobblestone rather than stone -- otherwise it looks

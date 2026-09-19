@@ -26,11 +26,17 @@ function event(
   agent: string,
   atMs: number,
   type: string,
-  fields: { action?: string; ok?: 0 | 1; error?: string; data?: Record<string, unknown> } = {},
+  fields: {
+    action?: string;
+    ok?: 0 | 1;
+    error?: string;
+    data?: Record<string, unknown>;
+    at?: { x: number; z: number };
+  } = {},
 ): void {
   db.prepare(
-    `INSERT INTO events (run_id, agent_id, timestamp, event_type, action, ok, error_code, data)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO events (run_id, agent_id, timestamp, event_type, action, ok, error_code, x, y, z, data)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     RUN,
     agent,
@@ -39,6 +45,9 @@ function event(
     fields.action ?? null,
     fields.ok ?? null,
     fields.error ?? null,
+    fields.at?.x ?? null,
+    fields.at === undefined ? null : 64,
+    fields.at?.z ?? null,
     JSON.stringify(fields.data ?? {}),
   );
 }
@@ -229,6 +238,60 @@ describe('code consistency', () => {
     const findings = doctor(db);
     assert.equal(only(findings, 'no_manifest').length, 1);
     assert.ok(!findings.some((f) => /could not run/.test(f.message)));
+  });
+});
+
+describe('wedge hotspots', () => {
+  test('movement failing again and again in one spot is flagged, with where', () => {
+    const db = freshDb();
+    for (let i = 0; i < 8; i++) {
+      event(db, 'dmitri', T0 + i * 60_000, 'movement', {
+        action: 'move_to', ok: 0, error: 'unreachable', at: { x: 1395 + (i % 2), z: -140 },
+      });
+    }
+    const found = only(doctor(db), 'wedge_hotspot');
+    assert.equal(found.length, 1);
+    assert.match(found[0]?.message ?? '', /8 times around \(139[56], -140\)/);
+  });
+
+  test('the same number of failures spread across the map is not a hotspot', () => {
+    const db = freshDb();
+    for (let i = 0; i < 8; i++) {
+      event(db, 'dmitri', T0 + i * 60_000, 'movement', {
+        action: 'move_to', ok: 0, error: 'unreachable', at: { x: i * 50, z: 0 },
+      });
+    }
+    assert.equal(only(doctor(db), 'wedge_hotspot').length, 0);
+  });
+});
+
+describe('deaths to mobs', () => {
+  test('being killed without having tried to fight is flagged', () => {
+    const db = freshDb();
+    event(db, 'bob', T0, 'death', { data: { cause: 'was shot by Skeleton' } });
+    assert.equal(only(doctor(db), 'unanswered_attack').length, 1);
+  });
+
+  test('fighting and losing is not', () => {
+    const db = freshDb();
+    event(db, 'bob', T0 - 10_000, 'damage_taken', { action: 'attack_entity', ok: 0 });
+    event(db, 'bob', T0, 'death', { data: { cause: 'was slain by Zombie' } });
+    assert.equal(only(doctor(db), 'unanswered_attack').length, 0);
+  });
+
+  test('drowning is not a fight that was dodged', () => {
+    const db = freshDb();
+    event(db, 'bob', T0, 'death', { data: { cause: 'drowned' } });
+    assert.equal(only(doctor(db), 'unanswered_attack').length, 0);
+  });
+});
+
+describe('the surfacing reflex', () => {
+  test('failing to reach air is an error', () => {
+    const db = freshDb();
+    event(db, 'bob', T0, 'reflex', { data: { reflex: 'surface', outcome: 'gave up after 25s' } });
+    const found = only(doctor(db), 'reflex');
+    assert.equal(found[0]?.severity, 'error');
   });
 });
 

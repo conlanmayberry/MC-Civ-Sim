@@ -26,7 +26,7 @@
 import type { Bot } from 'mineflayer';
 import { Vec3 } from 'vec3';
 
-import { navigateTo } from './movement.ts';
+import { approachBudgetMs, approachPlayer, navigateTo } from './movement.ts';
 import type { ActionContext } from './run.ts';
 import { ActionFailure } from './run.ts';
 import type { ActionResult } from './types.ts';
@@ -112,6 +112,37 @@ export function createSurviveActions(ctx: ActionContext) {
       .reduce((sum, i) => sum + i.count, 0);
   }
 
+  function isEmpty(position: Vec3): boolean {
+    const block = bot.blockAt(position);
+    return block !== null && block.boundingBox === 'empty';
+  }
+
+  /** The first empty block in the column above `from`, within three. */
+  function firstEmptyAbove(from: Vec3): Vec3 | null {
+    for (let dy = 1; dy <= 3; dy++) {
+      const candidate = from.offset(0, dy, 0);
+      if (isEmpty(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  /** A neighbouring spot to stand on that is not `avoid` or the space above it. */
+  function standableNeighbour(feet: Vec3, avoid: Vec3): Vec3 | null {
+    const offsets = [
+      [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1],
+    ];
+    for (const dy of [0, 1, -1]) {
+      for (const [dx, dz] of offsets) {
+        const spot = feet.offset(dx ?? 0, dy, dz ?? 0);
+        if (spot.x === avoid.x && spot.z === avoid.z) continue;
+        const floor = bot.blockAt(spot.offset(0, -1, 0));
+        if (floor === null || floor.boundingBox !== 'block') continue;
+        if (isEmpty(spot) && isEmpty(spot.offset(0, 1, 0))) return spot;
+      }
+    }
+    return null;
+  }
+
   return {
     /** Equip an item from the inventory by name. */
     async equipItem(
@@ -152,10 +183,14 @@ export function createSurviveActions(ctx: ActionContext) {
       itemName: string,
       count: number,
       toUsername: string,
-      timeoutMs = DEFAULT_GIVE_TIMEOUT_MS,
+      timeoutMs?: number,
     ): Promise<ActionResult> {
+      // Walking over is most of a handover. A flat 12s left "could not get
+      // close enough (9.8m away)" as a common result for recipients who were
+      // simply a short walk off.
+      const budget = timeoutMs ?? Math.max(DEFAULT_GIVE_TIMEOUT_MS, approachBudgetMs(bot, toUsername) + 4_000);
       return runner.run(
-        { action: 'give_item', eventType: 'item_given', timeoutMs },
+        { action: 'give_item', eventType: 'item_given', timeoutMs: budget },
         async (signal) => {
           if (!Number.isInteger(count) || count < 1) {
             throw new ActionFailure('invalid_argument', 'count must be a positive integer');
@@ -167,42 +202,27 @@ export function createSurviveActions(ctx: ActionContext) {
           }
           const amount = Math.min(count, have);
 
-          const target = bot.players[toUsername]?.entity;
-          if (target === undefined || target === null) {
-            throw new ActionFailure(
-              'not_found',
-              `cannot see ${toUsername} -- they may be out of render distance, in another dimension, or offline`,
-            );
+          if (bot.players[toUsername]?.entity == null || bot.entity.position.distanceTo(bot.players[toUsername]!.entity!.position) > GIVE_RANGE) {
+            const approach = await approachPlayer(bot, toUsername, GIVE_APPROACH_RANGE, budget - 4_000, signal);
+            if (!approach.ok) {
+              throw new ActionFailure(
+                approach.code === 'timeout' ? 'unreachable' : approach.code,
+                `could not reach ${toUsername} to hand it over: ${approach.message}`,
+              );
+            }
           }
-
-          if (bot.entity.position.distanceTo(target.position) > GIVE_RANGE) {
-            await navigateTo(
-              bot,
-              target.position.x,
-              target.position.y,
-              target.position.z,
-              GIVE_APPROACH_RANGE,
-              Math.max(5_000, timeoutMs - 4_000),
-              signal,
+          // Re-read: they may have walked off while this was approaching.
+          const target = bot.players[toUsername]?.entity;
+          if (target == null) {
+            throw new ActionFailure('not_found', `${toUsername} is no longer visible -- they may have moved away`);
+          }
+          const distance = bot.entity.position.distanceTo(target.position);
+          if (distance > GIVE_RANGE) {
+            throw new ActionFailure(
+              'unreachable',
+              `could not get close enough to ${toUsername} to hand it over ` +
+                `(${distance.toFixed(1)}m away -- stand within ${GIVE_RANGE}m of each other)`,
             );
-
-            // Re-read: they may have walked off while this was approaching,
-            // which the giver cannot have known when it decided to come here.
-            const current = bot.players[toUsername]?.entity;
-            if (current === undefined || current === null) {
-              throw new ActionFailure(
-                'not_found',
-                `${toUsername} is no longer visible -- they may have moved away`,
-              );
-            }
-            const distance = bot.entity.position.distanceTo(current.position);
-            if (distance > GIVE_RANGE) {
-              throw new ActionFailure(
-                'unreachable',
-                `could not get close enough to ${toUsername} to hand it over ` +
-                  `(${distance.toFixed(1)}m away -- stand within ${GIVE_RANGE}m of each other)`,
-              );
-            }
           }
 
           const item = findItem(itemName);
@@ -288,7 +308,26 @@ export function createSurviveActions(ctx: ActionContext) {
             throw new ActionFailure('not_found', 'target position is not loaded');
           }
           if (existing.boundingBox !== 'empty') {
-            throw new ActionFailure('blocked', `${existing.name} already occupies that position`);
+            // Already what was asked for: the goal state holds, so this is not
+            // a failure. Batches that re-place a wall they half-built earlier
+            // were failing on every block that was already standing.
+            if (existing.name === itemName) {
+              return {
+                block: itemName,
+                position: toPosition(target),
+                alreadyThere: true,
+                note: `a ${itemName} was already at that spot, so nothing was placed or used`,
+              };
+            }
+            // "stone already occupies that position" was the commonest refusal
+            // of all -- 237 times -- and usually meant the model aimed at the
+            // ground instead of the air above it. Say where the air is.
+            const free = firstEmptyAbove(target);
+            throw new ActionFailure(
+              'blocked',
+              `${existing.name} already occupies that position` +
+                (free === null ? '' : ` -- the nearest empty space above it is ${free.x},${free.y},${free.z}`),
+            );
           }
           // Remembered so the placement can be verified by CHANGE rather than
           // by solidity -- see below.
@@ -298,12 +337,21 @@ export function createSurviveActions(ctx: ActionContext) {
           // silently refuses rather than saying so -- which showed up as a
           // timeout. It comes up constantly when an agent walls itself in, so
           // the message says what to do about it.
+          // Step aside first, as a person would. It used to refuse and leave
+          // the model to spend a whole turn on a one-block move_to.
           const feet = bot.entity.position.floored();
           if (target.equals(feet) || target.equals(feet.offset(0, 1, 0))) {
-            throw new ActionFailure(
-              'blocked',
-              'you are standing there -- move aside before placing a block in your own space',
-            );
+            const aside = standableNeighbour(feet, target);
+            if (aside !== null) {
+              await navigateTo(bot, aside.x + 0.5, aside.y, aside.z + 0.5, 0, 4_000, signal);
+            }
+            const now = bot.entity.position.floored();
+            if (target.equals(now) || target.equals(now.offset(0, 1, 0))) {
+              throw new ActionFailure(
+                'blocked',
+                'you are standing there and there is no room to step aside -- move before placing a block in your own space',
+              );
+            }
           }
 
           // A block is placed against a neighbour's face, not into thin air.

@@ -94,5 +94,10 @@ export function describeForModel(name: string, result: ActionResult): string {
   if (result.ok) {
     return `${name}: ok ${JSON.stringify(result.detail)}`;
   }
-  return `${name}: FAILED [${result.error?.code ?? 'failed'}] ${result.error?.message ?? ''}`;
+  const failed = `${name}: FAILED [${result.error?.code ?? 'failed'}] ${result.error?.message ?? ''}`;
+  // What is known despite the failure -- where a move ended, what was gathered
+  // first. Bounded, so a verbose failure cannot swell the prompt.
+  if (Object.keys(result.detail).length === 0) return failed;
+  const detail = JSON.stringify(result.detail);
+  return `${failed} ${detail.length > 300 ? `${detail.slice(0, 297)}...` : detail}`;
 }

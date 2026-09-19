@@ -14,9 +14,10 @@ import pathfinderPkg from 'mineflayer-pathfinder';
 import type { Logger } from '../../util/log.ts';
 import { startReflexes } from '../reflexes.ts';
 import { createCombatActions } from './combat.ts';
+import { createContainerActions } from './containers.ts';
 import { createCraftActions } from './craft.ts';
 import { createGatherActions } from './gather.ts';
-import { createMovementActions } from './movement.ts';
+import { createMovementActions, trackPlayers } from './movement.ts';
 import { createActionRunner } from './run.ts';
 import { createSurviveActions } from './survive.ts';
 
@@ -37,8 +38,15 @@ export interface Actions {
   equipItem: ReturnType<typeof createSurviveActions>['equipItem'];
   giveItem: ReturnType<typeof createSurviveActions>['giveItem'];
   attackEntity: ReturnType<typeof createCombatActions>['attackEntity'];
+  smeltItem: ReturnType<typeof createContainerActions>['smeltItem'];
+  storeItems: ReturnType<typeof createContainerActions>['storeItems'];
+  takeItems: ReturnType<typeof createContainerActions>['takeItems'];
   /** True while an action holds the bot. */
   busy: () => boolean;
+  /** Name of the running action, if any. */
+  current: () => string | null;
+  /** Cut the running action short; the next one runs normally. */
+  interrupt: (reason: string) => void;
   /** Hear about reflexes (surfacing for air) that took the body over. */
   onReflex: (listener: (what: string) => void) => void;
 }
@@ -51,6 +59,10 @@ export interface Actions {
  */
 export function createActions(bot: Bot, log: Logger): Actions {
   bot.loadPlugin(pathfinder);
+  // Twice pathfinder's default. "Took to long to decide path to goal" ended
+  // moves outright on long trips across rough ground; a longer think is far
+  // cheaper than a failed turn.
+  bot.pathfinder.thinkTimeout = 10_000;
 
   const runner = createActionRunner(log);
   const ctx = { bot, log, runner };
@@ -60,7 +72,9 @@ export function createActions(bot: Bot, log: Logger): Actions {
   const craft = createCraftActions(ctx);
   const survive = createSurviveActions(ctx);
   const combat = createCombatActions(ctx);
+  const containers = createContainerActions(ctx);
   const reflexes = startReflexes(bot, runner, log);
+  trackPlayers(bot);
 
   return {
     moveTo: movement.moveTo,
@@ -74,7 +88,12 @@ export function createActions(bot: Bot, log: Logger): Actions {
     equipItem: survive.equipItem,
     giveItem: survive.giveItem,
     attackEntity: combat.attackEntity,
+    smeltItem: containers.smeltItem,
+    storeItems: containers.storeItems,
+    takeItems: containers.takeItems,
     busy: runner.busy,
+    current: runner.current,
+    interrupt: runner.interrupt,
     onReflex: reflexes.onReflex,
   };
 }

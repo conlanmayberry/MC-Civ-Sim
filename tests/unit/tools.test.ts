@@ -83,7 +83,11 @@ describe('tool schemas', () => {
       // set_goal only stores a string the agent shows itself next turn. It
       // touches nothing outside the process.
       'set_goal',
+      // Furnace and chest windows in the game world, nothing outside it.
+      'smelt_item',
       'stop_movement',
+      'store_items',
+      'take_items',
     ]);
     // Principle 16: nothing that runs code, reads files or touches the host.
     for (const name of names) {
@@ -142,7 +146,21 @@ function stubActions(record: string[]): Actions {
       record.push(`attackEntity(${target})`);
       return ok('attack_entity');
     },
+    smeltItem: async (item, count) => {
+      record.push(`smeltItem(${item},${count})`);
+      return ok('smelt_item');
+    },
+    storeItems: async (item, count) => {
+      record.push(`storeItems(${item},${String(count)})`);
+      return ok('store_items');
+    },
+    takeItems: async (item, count) => {
+      record.push(`takeItems(${String(item)},${String(count)})`);
+      return ok('take_items');
+    },
     busy: () => false,
+    current: () => null,
+    interrupt: () => {},
     onReflex: () => {},
   } as Actions;
 }

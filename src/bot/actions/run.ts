@@ -15,11 +15,18 @@ import type { ActionError, ActionErrorCode, ActionResult } from './types.ts';
 /** Thrown by action bodies to select a specific error code. */
 export class ActionFailure extends Error {
   readonly code: ActionErrorCode;
+  /**
+   * What is known despite the failure -- where a move ended, what was gathered
+   * before it went wrong. Failed moves used to record only a message, so the
+   * analysis of a session could not say where agents were trying to go.
+   */
+  readonly detail: Record<string, unknown>;
 
-  constructor(code: ActionErrorCode, message: string) {
+  constructor(code: ActionErrorCode, message: string, detail: Record<string, unknown> = {}) {
     super(message);
     this.name = 'ActionFailure';
     this.code = code;
+    this.detail = detail;
   }
 }
 
@@ -48,6 +55,8 @@ export interface ActionRunner {
    * same way. Pass null to release.
    */
   hold: (reason: string | null) => void;
+  /** Cut the running action short as `interrupted`, without refusing the next one. */
+  interrupt: (reason: string) => void;
 }
 
 export interface ActionContext {
@@ -72,6 +81,10 @@ export function createActionRunner(log: Logger): ActionRunner {
     hold(reason) {
       held = reason;
       if (reason !== null) abortRunning?.(reason);
+    },
+
+    interrupt(reason) {
+      abortRunning?.(reason);
     },
 
     async run(spec, body) {
@@ -130,6 +143,7 @@ export function createActionRunner(log: Logger): ActionRunner {
           detail,
         };
       } catch (err) {
+        const failureDetail = err instanceof ActionFailure ? err.detail : {};
         const failure =
           err instanceof ActionFailure
             ? { code: err.code, message: err.message }
@@ -142,7 +156,7 @@ export function createActionRunner(log: Logger): ActionRunner {
           ok: false,
           action: spec.action,
           durationMs: Date.now() - started,
-          detail: {},
+          detail: failureDetail,
           error: failure,
         };
       } finally {

@@ -196,3 +196,30 @@ describe('holding the body for a reflex', () => {
     assert.equal(allowed.ok, true);
   });
 });
+
+describe('interrupting without holding', () => {
+  test('cuts the running action short, and the next one runs', async () => {
+    const { logger } = recordingLogger();
+    const runner = createActionRunner(logger);
+
+    const running = runner.run({ ...spec, timeoutMs: 5_000 }, (signal) => new Promise((resolve) => {
+      signal.addEventListener('abort', () => resolve({}));
+    }));
+    runner.interrupt('attacked by zombie');
+    const result = await running;
+    assert.equal(result.error?.code, 'interrupted');
+    assert.equal(result.error?.message, 'attacked by zombie');
+
+    const next = await runner.run(spec, async () => ({ done: true }));
+    assert.equal(next.ok, true);
+  });
+
+  test('failures keep the detail they carry', async () => {
+    const { logger } = recordingLogger();
+    const runner = createActionRunner(logger);
+    const result = await runner.run(spec, async () => {
+      throw new ActionFailure('unreachable', 'wedged', { remaining: 9.5 });
+    });
+    assert.deepEqual(result.detail, { remaining: 9.5 });
+  });
+});

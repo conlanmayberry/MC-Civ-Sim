@@ -129,7 +129,9 @@ commit.
 actually happened: the same failure repeated dozens of times, actions that
 mostly fail, a success rate that dropped since last session, handovers never
 picked up, starvation, standing still outside a standing order, more talking
-than doing, and agents running different code. It prints automatically when
+than doing, agents running different code, one spot where movement keeps
+failing, the surfacing reflex struggling, and deaths to mobs without a fight.
+Deaths are listed by cause, from the server's own death messages. It prints automatically when
 each agent stops, and the dashboard shows it under Actions.
 
 **`npm run replay`** takes real situations from a past session and puts them to

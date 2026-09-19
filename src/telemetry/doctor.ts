@@ -59,6 +59,13 @@ const CHAT_RATIO = 0.5;
 const MIN_CHAT = 30;
 const DEATHS_PER_HOUR = 2;
 const NOOP_RATIO = 0.25;
+/** Failed moves in one ~4-block cell before it counts as a trap. */
+const HOTSPOT_FAILURES = 6;
+const HOTSPOT_RADIUS = 4;
+/** Surfacing reflexes per hour before it means paths still run through water. */
+const SURFACINGS_PER_HOUR = 6;
+/** How far back to look for an attempt to fight, before a death by a mob. */
+const FIGHT_WINDOW_MS = 60_000;
 const MIN_DECISIONS = 40;
 
 type Row = Record<string, unknown>;
@@ -604,6 +611,137 @@ function codeConsistency(db: DatabaseSync, runIds: readonly string[]): Finding[]
   return findings;
 }
 
+/**
+ * One spot where movement keeps failing.
+ *
+ * Dmitri wedged at the same village corner sixteen times in half an hour on
+ * 2026-09-16, at one heart and no food. Spread over a session a trap like that
+ * hides inside an ordinary-looking move_to success rate; grouped by place it
+ * is obvious.
+ */
+function wedgeHotspots(db: DatabaseSync, runIds: readonly string[]): Finding[] {
+  const byAgent = new Map<string, Array<{ x: number; z: number }>>();
+  for (const r of rows(
+    db,
+    `SELECT agent_id, x, z FROM events
+     WHERE action IN ('move_to','follow_player') AND ok = 0 AND error_code IN ('unreachable','timeout')
+       AND x IS NOT NULL AND run_id IN (${holes(runIds)})`,
+    runIds,
+  )) {
+    const agent = String(r['agent_id']);
+    const list = byAgent.get(agent) ?? [];
+    list.push({ x: Number(r['x']), z: Number(r['z']) });
+    byAgent.set(agent, list);
+  }
+
+  // Densest cluster first, then the densest of what is left -- rather than a
+  // fixed grid, which splits a trap in two whenever it straddles a cell edge.
+  const findings: Finding[] = [];
+  for (const [agent, points] of byAgent) {
+    let remaining = points;
+    for (;;) {
+      const near = (p: { x: number; z: number }): Array<{ x: number; z: number }> =>
+        remaining.filter((q) => Math.hypot(q.x - p.x, q.z - p.z) <= HOTSPOT_RADIUS);
+      let best: { x: number; z: number } | null = null;
+      let bestCount = 0;
+      for (const p of remaining) {
+        const n = near(p).length;
+        if (n > bestCount) {
+          best = p;
+          bestCount = n;
+        }
+      }
+      if (best === null || bestCount < HOTSPOT_FAILURES) break;
+      const centre = best;
+      findings.push({
+        check: 'wedge_hotspot',
+        severity: 'warn',
+        agent,
+        message:
+          `movement failed ${bestCount} times around (${Math.round(centre.x)}, ${Math.round(centre.z)})` +
+          ' -- a spot pathfinding keeps getting caught on',
+      });
+      remaining = remaining.filter((q) => Math.hypot(q.x - centre.x, q.z - centre.z) > HOTSPOT_RADIUS);
+    }
+  }
+  return findings;
+}
+
+/** The surfacing reflex: rescues are fine, many of them mean paths still cross water. */
+function reflexes(db: DatabaseSync, runIds: readonly string[]): Finding[] {
+  const hours = hoursByAgent(db, runIds);
+  const findings: Finding[] = [];
+  for (const r of rows(
+    db,
+    `SELECT agent_id,
+            SUM(CASE WHEN json_extract(data, '$.outcome') = 'surfaced' THEN 1 ELSE 0 END) AS surfaced,
+            SUM(CASE WHEN json_extract(data, '$.outcome') NOT IN ('surfaced','died') THEN 1 ELSE 0 END) AS failed
+       FROM events WHERE event_type = 'reflex' AND run_id IN (${holes(runIds)}) GROUP BY agent_id`,
+    runIds,
+  )) {
+    const agent = String(r['agent_id']);
+    const surfaced = Number(r['surfaced']);
+    const failed = Number(r['failed']);
+    if (failed > 0) {
+      findings.push({
+        check: 'reflex',
+        severity: 'error',
+        agent,
+        message: `the surfacing reflex could not reach air ${failed} time(s)`,
+      });
+    }
+    const h = hours.get(agent) ?? 0;
+    if (h >= 0.25 && surfaced / h >= SURFACINGS_PER_HOUR) {
+      findings.push({
+        check: 'reflex',
+        severity: 'warn',
+        agent,
+        message: `had to surface for air ${surfaced} times in ${h.toFixed(1)}h -- its paths still run through deep water`,
+      });
+    }
+  }
+  return findings;
+}
+
+/**
+ * Killed by a mob without having tried to fight it.
+ *
+ * On 2026-09-16 one skeleton killed all four agents in 29 seconds, each of
+ * them mid-conversation. attack_entity and the attacked-wake exist because of
+ * that; this is how the next session shows whether they are being used.
+ */
+function unansweredAttacks(db: DatabaseSync, runIds: readonly string[]): Finding[] {
+  const tally = new Map<string, { killed: number; unanswered: number }>();
+  for (const death of rows(
+    db,
+    `SELECT agent_id, run_id, timestamp FROM events
+     WHERE event_type = 'death' AND run_id IN (${holes(runIds)})
+       AND (json_extract(data, '$.cause') LIKE 'was slain by%' OR json_extract(data, '$.cause') LIKE 'was shot by%')`,
+    runIds,
+  )) {
+    const agent = String(death['agent_id']);
+    const at = Date.parse(String(death['timestamp']));
+    const fought = rows(
+      db,
+      `SELECT 1 FROM events WHERE agent_id = ? AND run_id = ? AND action = 'attack_entity'
+         AND timestamp BETWEEN ? AND ? LIMIT 1`,
+      [agent, String(death['run_id']), new Date(at - FIGHT_WINDOW_MS).toISOString(), new Date(at).toISOString()],
+    ).length > 0;
+    const entry = tally.get(agent) ?? { killed: 0, unanswered: 0 };
+    entry.killed++;
+    if (!fought) entry.unanswered++;
+    tally.set(agent, entry);
+  }
+  return [...tally.entries()]
+    .filter(([, t]) => t.unanswered > 0)
+    .map(([agent, t]) => ({
+      check: 'unanswered_attack',
+      severity: 'warn' as const,
+      agent,
+      message: `killed by a mob ${t.unanswered} of ${t.killed} time(s) without trying to fight back`,
+    }));
+}
+
 // --- entry point ------------------------------------------------------------
 
 const CHECKS: ReadonlyArray<{ name: string; run: (db: DatabaseSync, o: DoctorOptions) => Finding[] }> = [
@@ -623,6 +761,9 @@ const CHECKS: ReadonlyArray<{ name: string; run: (db: DatabaseSync, o: DoctorOpt
   { name: 'chatter', run: (db, o) => chatter(db, o.runIds) },
   { name: 'deaths', run: (db, o) => deaths(db, o.runIds) },
   { name: 'loop_health', run: (db, o) => loopHealth(db, o.runIds) },
+  { name: 'wedge_hotspot', run: (db, o) => wedgeHotspots(db, o.runIds) },
+  { name: 'reflex', run: (db, o) => reflexes(db, o.runIds) },
+  { name: 'unanswered_attack', run: (db, o) => unansweredAttacks(db, o.runIds) },
 ];
 
 const ORDER: Record<Severity, number> = { error: 0, warn: 1, info: 2 };

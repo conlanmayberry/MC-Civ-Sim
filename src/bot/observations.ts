@@ -200,6 +200,26 @@ function entityName(entity: Entity): string {
   return entity.username ?? entity.displayName ?? entity.name ?? entity.mobType ?? entity.type;
 }
 
+/**
+ * Hostile mobs within a radius, nearest first.
+ *
+ * Its own function because two things need it that the general entity list
+ * does not serve: the waker, which must know about a skeleton before the next
+ * scheduled turn, and the prompt, which must not let one be lost among sheep.
+ * On 2026-09-16 a single skeleton killed all four agents in 29 seconds while
+ * each of them was mid-conversation about food.
+ */
+export function nearbyHostiles(bot: Bot, radius: number): Array<{ id: number; name: string; distance: number }> {
+  const self = bot.entity.position;
+  const found: Array<{ id: number; name: string; distance: number }> = [];
+  for (const entity of Object.values(bot.entities)) {
+    if (entity.type !== 'hostile' || !entity.isValid || entity.position === undefined) continue;
+    const distance = self.distanceTo(entity.position);
+    if (distance <= radius) found.push({ id: entity.id, name: entityName(entity), distance: round2(distance) });
+  }
+  return found.sort((a, b) => a.distance - b.distance);
+}
+
 export function observeEntities(bot: Bot, radius: number, limit: number): EntitiesObservation {
   const self = bot.entity.position;
   const found: EntityObservation[] = [];
