@@ -26,7 +26,12 @@ import { round2, toPosition } from './types.ts';
 
 const { goals } = pathfinderPkg;
 
-export const DEFAULT_ATTACK_TIMEOUT_MS = 30_000;
+/**
+ * 45s, not 30. A hit animal runs, and a cow is barely slower than a walking
+ * bot: a bare-fisted kill needs ten hits, and the arena measured five landed
+ * in 24s with the rest of the budget spent chasing.
+ */
+export const DEFAULT_ATTACK_TIMEOUT_MS = 45_000;
 const SEARCH_RADIUS = 24;
 /** Vanilla melee reach is 3; a little under, so swings land from where we stop. */
 const REACH = 2.8;
@@ -111,13 +116,17 @@ export function createCombatActions(ctx: ActionContext) {
           bot.on('entityDead', onDead);
           bot.on('entitySpawn', onSpawn);
 
+          // Inside the runner's timeout, so a chase that cannot be won ends
+          // as "still alive after N hits" -- which says what happened -- and
+          // not as a bare "exceeded 30000ms" that throws the detail away.
+          const fightUntil = Date.now() + timeoutMs - PICKUP_MS - 2_000;
           let lastSwing = 0;
           let chasing = false;
           bot.pathfinder.setMovements(movementsFor(bot));
 
           try {
             for (;;) {
-              if (signal.aborted) break;
+              if (signal.aborted || Date.now() > fightUntil) break;
               const gone = bot.entities[entity.id] === undefined;
               if (died || gone) break;
 
@@ -128,7 +137,9 @@ export function createCombatActions(ctx: ActionContext) {
 
               if (distance > REACH) {
                 if (!chasing) {
-                  bot.pathfinder.setGoal(new goals.GoalFollow(entity, REACH - 1), true);
+                  // Right up against it: stopping at arm's length from a
+                  // fleeing animal means the next step it takes is out of reach.
+                  bot.pathfinder.setGoal(new goals.GoalFollow(entity, 1), true);
                   chasing = true;
                 }
               } else {
@@ -155,7 +166,15 @@ export function createCombatActions(ctx: ActionContext) {
             if (bot.entities[entity.id] === undefined) {
               throw new ActionFailure('not_found', `lost sight of the ${name} after ${swings} hit(s)`);
             }
-            throw new ActionFailure('failed', `${name} is still alive after ${swings} hit(s)`);
+            const distance = bot.entities[entity.id] === undefined
+              ? null
+              : entity.position.distanceTo(bot.entity.position);
+            throw new ActionFailure(
+              'failed',
+              `${name} is still alive after ${swings} hit(s)` +
+                (distance === null ? '' : `, ${round2(distance)}m away`),
+              { target: name, hits: swings, weapon: weapon ?? 'fist' },
+            );
           }
 
           // Walk over what it dropped, so a hunt is one turn and not two. Drops

@@ -115,9 +115,49 @@ const handoverAdjacent: Scenario = {
     await until(() => countItem(b.bot, 'bread') >= 3, 3_000);
 
     const got = countItem(b.bot, 'bread');
-    return got >= 3
-      ? pass(`Bravo received all 3 bread (collect: ${describeFailure(collect)})`)
-      : fail(`Bravo ended with ${got}/3 bread; collect_items said ${describeFailure(collect)}`);
+    if (got >= 3) return pass(`Bravo received all 3 bread (collect: ${describeFailure(collect)})`);
+    // Where it went matters: back to the giver is a different bug from left
+    // lying on the ground, and the message used to say neither.
+    const withGiver = countItem(a.bot, 'bread');
+    const onGround = Object.values(b.bot.entities).filter((e) => e.name === 'item').length;
+    return fail(
+      `Bravo ended with ${got}/3 bread; giver kept ${withGiver}, ${onGround} stack(s) on the ground; ` +
+        `collect_items said ${describeFailure(collect)} ${JSON.stringify(collect.detail)}`,
+    );
+  },
+};
+
+/**
+ * The giver must not take its own handover back.
+ *
+ * bot.toss drops at the giver's feet, and vanilla only blocks the thrower from
+ * picking it up again for two seconds. Caught in the arena: a handover where
+ * the recipient's sweep collected three items and none of them was the bread,
+ * because the giver was standing on it and had absorbed it again.
+ */
+const handoverStays: Scenario = {
+  id: 'handover_stays_put',
+  title: 'the giver steps off its own drop instead of taking it back',
+  live: false,
+  timeoutMs: 60_000,
+  async run({ arena }) {
+    const a = await arena.spawn('ScenAlpha', at(-2, 0));
+    const b = await arena.spawn('ScenBravo', at(2, 0));
+    await arena.give(a.name, 'bread', 3);
+
+    const give = await a.actions.giveItem('bread', 3, b.name);
+    if (!give.ok) return fail(`give_item: ${describeFailure(give)}`);
+
+    // Five seconds is well past vanilla's two-second delay. Nobody sweeps --
+    // but the recipient standing close may pick it up by itself, which is a
+    // handover working, not a handover lost.
+    await sleep(5_000);
+    const backWithGiver = countItem(a.bot, 'bread');
+    const withRecipient = countItem(b.bot, 'bread');
+    const onGround = Object.values(a.bot.entities).filter((e) => e.name === 'item').length;
+    return backWithGiver === 0 && (onGround > 0 || withRecipient > 0)
+      ? pass(`the giver kept none; ${withRecipient} with the recipient, ${onGround} stack(s) on the ground`)
+      : fail(`the giver took back ${backWithGiver} bread (${onGround} on the ground, ${withRecipient} with the recipient)`);
   },
 };
 
@@ -802,6 +842,7 @@ const agentFightsBack: Scenario = {
 
 export const SCENARIOS: readonly Scenario[] = [
   handoverAdjacent,
+  handoverStays,
   handoverWalks,
   dropIsNamed,
   moveAroundWall,

@@ -780,6 +780,19 @@ deaths to mobs with no attempt to fight.
 
 ### Found while building it
 
+Handovers were throwing items backwards. `bot.lookAt` updates the bot's own
+copy of its rotation and leaves the packet to the next physics tick, while
+`bot.toss` writes immediately -- so the server dropped the stack in whatever
+direction the bot faced *before* turning, which is usually away from the person
+it was giving to. The stack landed under the giver's own feet, and vanilla
+blocks the thrower from picking its own toss back up for only two seconds, so
+the giver took it straight back. That is very likely the whole of "4 of 4 items
+handed to Alice were never picked up". give_item now waits for the turn to land,
+throws from a standstill so the stack does not inherit the bot's momentum, backs
+away from the drop, and -- because none of those is certain on its own -- checks
+the end state and throws again if the stack came back. In twelve arena
+handovers, nine now land on the recipient and are picked up with no sweep at all.
+
 A pathfinder cost function that read `block.position` crashed on the
 placeholder blocks pathfinder passes for unloaded space -- inside the physics
 tick, which would have taken the agent process down. It surfaced in an arena

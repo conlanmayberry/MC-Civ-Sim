@@ -69,6 +69,17 @@ const GIVE_RANGE = 4;
  * pathfinder that overshoots slightly still lands inside the range that counts.
  */
 const GIVE_APPROACH_RANGE = 2;
+/** How far the giver steps clear of its own drop, and how long it may take. */
+const STEP_OFF_BLOCKS = 4;
+const STEP_OFF_MS = 3_000;
+/** Throws of the same stack before giving up on it staying down. */
+const TOSS_ATTEMPTS = 3;
+/** Past vanilla's two-second pickup delay, so a re-absorbed stack has shown itself. */
+const TOSS_SETTLE_MS = 2_300;
+/** Long enough for the bot's own momentum to bleed off before it throws. */
+const SETTLE_BEFORE_TOSS_MS = 350;
+/** Long enough for the turn to be sent and acted on before the drop packet. */
+const LOOK_SETTLE_MS = 250;
 
 /** The six neighbours of a block, with the face vector pointing back at it. */
 const FACES: Array<{ offset: Vec3; face: Vec3 }> = [
@@ -143,6 +154,28 @@ export function createSurviveActions(ctx: ActionContext) {
     return null;
   }
 
+  /**
+   * Back away from a stack just dropped, leaving it between giver and
+   * recipient.
+   *
+   * Away from the recipient, not towards them: a toss flies in the direction
+   * the giver is facing, which is at the recipient, so stepping that way walks
+   * the giver straight onto its own drop. Measured in the arena at one
+   * handover in eight -- the server's copy of the giver's inventory still held
+   * all three bread.
+   */
+  async function stepOffDrop(recipient: Vec3, signal: AbortSignal): Promise<void> {
+    const here = bot.entity.position;
+    const toward = recipient.minus(here);
+    const length = Math.hypot(toward.x, toward.z) || 1;
+    const destination = here.offset((-toward.x / length) * STEP_OFF_BLOCKS, 0, (-toward.z / length) * STEP_OFF_BLOCKS);
+    try {
+      await navigateTo(bot, destination.x, destination.y, destination.z, 1, STEP_OFF_MS, signal);
+    } catch {
+      // Best effort: the handover itself has already happened.
+    }
+  }
+
   return {
     /** Equip an item from the inventory by name. */
     async equipItem(
@@ -188,7 +221,8 @@ export function createSurviveActions(ctx: ActionContext) {
       // Walking over is most of a handover. A flat 12s left "could not get
       // close enough (9.8m away)" as a common result for recipients who were
       // simply a short walk off.
-      const budget = timeoutMs ?? Math.max(DEFAULT_GIVE_TIMEOUT_MS, approachBudgetMs(bot, toUsername) + 4_000);
+      const budget =
+        timeoutMs ?? Math.max(DEFAULT_GIVE_TIMEOUT_MS, approachBudgetMs(bot, toUsername) + 4_000) + TOSS_ATTEMPTS * (TOSS_SETTLE_MS + STEP_OFF_MS);
       return runner.run(
         { action: 'give_item', eventType: 'item_given', timeoutMs: budget },
         async (signal) => {
@@ -233,34 +267,82 @@ export function createSurviveActions(ctx: ActionContext) {
             throw new ActionFailure('insufficient_items', `no ${itemName} in inventory`);
           }
 
-          try {
-            await bot.lookAt(target.position.offset(0, 1, 0), true);
-          } catch {
-            /* not fatal; the drop still lands at the giver's feet either way */
-          }
-
           const before = countItem(itemName);
-          try {
-            await bot.toss(item.type, null, amount);
-          } catch (err) {
-            throw new ActionFailure(
-              'failed',
-              `could not drop ${itemName}: ${err instanceof Error ? err.message : String(err)}`,
-            );
+          let given = 0;
+
+          // Throw, back away, and check it stayed thrown.
+          //
+          // Vanilla blocks the thrower from picking its own toss back up for
+          // two seconds only; after that the giver is just another player
+          // standing on an item and takes it straight back. Measured in the
+          // arena: about one handover in eight came back, and the recipient's
+          // sweep then collected "three items", none of them the bread.
+          // Backing off is not reliable on its own -- the step can be blocked,
+          // or the stack can land where the giver stops -- so the end state is
+          // what is checked, and a returned stack is thrown again from the new
+          // spot.
+          for (let attempt = 0; attempt < TOSS_ATTEMPTS; attempt++) {
+            const held = countItem(itemName);
+            const stack = findItem(itemName);
+            if (stack === null) break;
+
+            // Still, then facing them. A dropped stack inherits the thrower's
+            // own velocity: tossing while still drifting backwards from the
+            // last retreat cancels the throw and the stack lands underfoot,
+            // where the giver takes it straight back after the two-second
+            // pickup delay.
+            bot.pathfinder?.setGoal(null);
+            bot.clearControlStates();
+            await sleep(SETTLE_BEFORE_TOSS_MS);
+
+            // Facing them, every time. A toss flies where the bot looks, and
+            // on a retry the bot has just backed away from the drop -- aiming
+            // once, before the loop, threw the retry over its own shoulder
+            // and straight back into its inventory. Seen in three of twelve
+            // arena handovers, each one failing all three attempts.
+            const recipient = bot.players[toUsername]?.entity ?? target;
+            try {
+              await bot.lookAt(recipient.position.offset(0, 1, 0), true);
+              // The turn must reach the SERVER before the drop does, and
+              // lookAt only updates the bot's own copy plus a packet sent on
+              // the next physics tick, while toss writes immediately. Without
+              // this wait the server drops the stack in whatever direction the
+              // bot was facing before -- measured in the arena: every failed
+              // handover threw the bread backwards, away from the recipient
+              // and under the giver's own feet.
+              await sleep(LOOK_SETTLE_MS);
+            } catch {
+              /* not fatal; the drop still lands at the giver's feet either way */
+            }
+
+            try {
+              await bot.toss(stack.type, null, Math.min(amount - given, held));
+            } catch (err) {
+              if (given > 0) break;
+              throw new ActionFailure(
+                'failed',
+                `could not drop ${itemName}: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+
+            // A touch longer than most waits here: the inventory update for a
+            // toss arrives as its own packet, and 250ms occasionally read as
+            // "dropping had no effect" for a drop that had in fact happened.
+            await sleep(400);
+            given = before - countItem(itemName);
+            if (given <= 0) {
+              throw new ActionFailure('failed', `dropping ${itemName} had no effect`);
+            }
+
+            await stepOffDrop(target.position, signal);
+            // Past the pickup delay, so "still gone" means it stayed gone.
+            await sleep(TOSS_SETTLE_MS);
+            given = before - countItem(itemName);
+            if (given >= amount) break;
           }
 
-          // A touch longer than most waits here: the inventory update for a
-          // toss arrives as its own packet, and 250ms occasionally read as
-          // "dropping had no effect" for a drop that had in fact happened.
-          await sleep(400);
-
-          // Verified by change, same as every other action here: this drops
-          // the stack rather than confirming it was PICKED UP, since that
-          // depends on what the recipient does next and is not this action's
-          // to promise.
-          const given = before - countItem(itemName);
           if (given <= 0) {
-            throw new ActionFailure('failed', `dropping ${itemName} had no effect`);
+            throw new ActionFailure('failed', `${itemName} kept coming back to you rather than staying dropped`);
           }
 
           return {

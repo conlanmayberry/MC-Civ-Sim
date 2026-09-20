@@ -52,6 +52,17 @@ const CANDIDATES = 4;
 const DROP_SETTLE_MS = 350;
 /** Let residual movement bleed off before swinging, so the dig is not aborted. */
 const DIG_SETTLE_MS = 250;
+/**
+ * Tries per drop before leaving it.
+ *
+ * Two was not enough: a handover collected nothing about one run in five,
+ * because both tries were spent "arriving" at an item the bot already stood
+ * beside while vanilla's post-toss pickup delay was still running.
+ */
+const DROP_ATTEMPTS = 3;
+/** Close enough that stepping, not pathfinding, is what is missing. */
+const NUDGE_RANGE = 3;
+const NUDGE_MS = 450;
 /** Stop sweeping after this many drops, so one action cannot run away. */
 const MAX_DROPS_PER_SWEEP = 12;
 
@@ -215,7 +226,7 @@ export function createGatherActions(ctx: ActionContext) {
         // `objectType` is deprecated in prismarine-entity and prints a stack
         // trace on every access; `name` alone identifies dropped items.
         .filter((e) => e.name === 'item')
-        .filter((e) => (attempts.get(e.id) ?? 0) < 2)
+        .filter((e) => (attempts.get(e.id) ?? 0) < DROP_ATTEMPTS)
         .filter((e) => bot.entity.position.distanceTo(e.position) <= radius)
         .sort(
           (a, b) =>
@@ -247,6 +258,23 @@ export function createGatherActions(ctx: ActionContext) {
       // still a real result.
       if (!nav.ok) break;
       await sleep(DROP_SETTLE_MS);
+
+      // Arrived, and it is still lying there. Walking is not what is missing:
+      // either the hitbox is a few tenths short of the item, or the item is
+      // inside vanilla's two-second pickup delay after being tossed. Lean
+      // into it for a moment rather than re-running the pathfinder, which
+      // arrives instantly from where it already stands and changes nothing.
+      const stillThere = bot.entities[nearest.id];
+      if (stillThere !== undefined && stillThere.position.distanceTo(bot.entity.position) <= NUDGE_RANGE) {
+        try {
+          await bot.lookAt(stillThere.position, true);
+          bot.setControlState('forward', true);
+          await sleep(NUDGE_MS);
+        } finally {
+          bot.setControlState('forward', false);
+        }
+        await sleep(DROP_SETTLE_MS);
+      }
     }
 
     return {
