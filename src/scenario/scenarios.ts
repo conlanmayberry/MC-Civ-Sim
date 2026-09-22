@@ -668,12 +668,18 @@ const harvestRipeOnly: Scenario = {
   live: false,
   timeoutMs: 90_000,
   async run({ arena }) {
-    // Water in the middle row, walled in by farmland on every side so it
-    // cannot spill across the arena floor.
-    await arena.fill(at(2, -1), at(5, 1), 'farmland');
-    await arena.setBlock(at(3, 0), 'water');
-    const ripe = [at(2, -1, 1), at(3, -1, 1)];
-    const green = [at(4, -1, 1), at(5, -1, 1)];
+    // Sunk into the floor, level with where the bot walks, as a real field
+    // is. A field raised a block made every approach a jump onto farmland,
+    // and landing on farmland tramples it -- a hazard of the test, not of
+    // farming. Water in the middle row, walled in by farmland, with a block
+    // under it so it cannot pour out through the bottom of the arena.
+    await arena.fill(at(2, -1, -1), at(5, 1, -1), 'farmland');
+    // fill, not setBlock: this block sits below the arena and survives the
+    // reset, and setblock reports "could not set" when it is already there.
+    await arena.fill(at(3, 0, -2), at(3, 0, -2), 'glass');
+    await arena.setBlock(at(3, 0, -1), 'water');
+    const ripe = [at(2, -1), at(3, -1)];
+    const green = [at(4, -1), at(5, -1)];
     for (const p of ripe) await arena.setBlock(p, 'wheat[age=7]');
     for (const p of green) await arena.setBlock(p, 'wheat[age=2]');
     const a = await arena.spawn('ScenAlpha', at(0, 0));
@@ -766,6 +772,82 @@ const useBed: Scenario = {
     return rest.detail['respawnPoint'] === true
       ? pass('day: bed placed, respawn point set')
       : fail(`day: the server did not confirm the respawn point (${String(rest.detail['note'])})`);
+  },
+};
+
+/**
+ * Out of a pit with nothing but planks.
+ *
+ * Alice spent 81 minutes on 2026-09-22 at the bottom of a ravine holding six
+ * spruce planks: pathfinder would only build up with dirt or cobblestone.
+ * Bedrock walls, so digging out is not an option and building up is the test.
+ */
+const escapePit: Scenario = {
+  id: 'escape_pit',
+  title: 'move_to climbs out of a pit by building up with planks',
+  live: false,
+  timeoutMs: 120_000,
+  async run({ arena }) {
+    await arena.fill(at(-2, -2), at(2, 2, 2), 'bedrock');
+    await arena.fill(at(-1, -1), at(1, 1, 2), 'air');
+    const a = await arena.spawn('ScenAlpha', at(0, 0));
+    await arena.give(a.name, 'spruce_planks', 8);
+
+    const out = at(7, 0);
+    const move = await a.actions.moveTo(out.x, out.y, out.z, 1);
+    const left = distance(a.bot, out);
+    const used = 8 - countItem(a.bot, 'spruce_planks');
+    return move.ok && left <= 2
+      ? pass(`climbed out using ${used} planks in ${(move.durationMs / 1000).toFixed(1)}s`)
+      : fail(`${describeFailure(move)}; ${left.toFixed(1)}m from the way out, ${used} planks used`);
+  },
+};
+
+/** Hunting says what is actually there, and will not chase fish into the water. */
+const huntGuidance: Scenario = {
+  id: 'hunt_guidance',
+  title: 'attack_entity refuses fish, and a failed hunt names what is in sight',
+  live: false,
+  timeoutMs: 45_000,
+  async run({ arena }) {
+    const a = await arena.spawn('ScenAlpha', at(0, 0));
+    const chicken = at(8, 0);
+    await arena.run(`summon minecraft:chicken ${chicken.x} ${chicken.y} ${chicken.z}`);
+    await sleep(1_000);
+
+    const fish = await a.actions.attackEntity('cod');
+    if (fish.ok || fish.error?.code !== 'invalid_argument') return fail(`cod was not refused: ${describeFailure(fish)}`);
+
+    const cow = await a.actions.attackEntity('cow');
+    return !cow.ok && cow.error?.code === 'not_found' && cow.error.message.includes('chicken')
+      ? pass(cow.error.message)
+      : fail(`the failed hunt did not name the chicken: ${describeFailure(cow)}`);
+  },
+};
+
+/** Digging out the floor you stand on over a drop is how miners die. */
+const noDigUnderfoot: Scenario = {
+  id: 'no_dig_underfoot',
+  title: 'mine_block will not dig the block underfoot over a long drop',
+  live: false,
+  timeoutMs: 45_000,
+  async run({ arena }) {
+    // One stone block in the glass floor, with the open sky beneath it.
+    const floor = at(4, 0, -1);
+    await arena.setBlock(floor, 'stone');
+    const a = await arena.spawn('ScenAlpha', at(4, 0));
+    await arena.give(a.name, 'wooden_pickaxe', 1);
+    let fell = false;
+    a.bot.on('move', () => {
+      if (a.bot.entity.position.y < ARENA.y - 1) fell = true;
+    });
+
+    const mine = await a.actions.mineBlock('stone', 1, 8);
+    await sleep(500);
+    if (fell) return fail('dug out its own floor and fell');
+    return !mine.ok && mine.error?.code === 'blocked'
+      ? pass(mine.error.message)
+      : fail(`expected a refusal; mine_block said ${describeFailure(mine)}`);
   },
 };
 
@@ -1007,6 +1089,9 @@ export const SCENARIOS: readonly Scenario[] = [
   pickBerries,
   wearBestArmor,
   useBed,
+  escapePit,
+  huntGuidance,
+  noDigUnderfoot,
   agentsAnswerGroupCall,
   agentFeedsHungryPeer,
   agentFightsBack,

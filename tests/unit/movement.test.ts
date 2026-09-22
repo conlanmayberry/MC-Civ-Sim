@@ -53,3 +53,56 @@ describe('describing time for the model', async () => {
     assert.equal(describeAge(185_000), '3 min ago');
   });
 });
+
+describe('getting unstuck without falling', async () => {
+  const { safeHopYaw } = await import('../../src/bot/actions/movement.ts');
+
+  /** Ground at y=63 only where `solid(x, z)` says so; air everywhere else, down to bedrock-free void. */
+  function world(solid: (x: number, z: number) => boolean, liquid: (x: number, z: number) => string | null = () => null) {
+    return {
+      entity: { position: new Vec3(0.5, 64, 0.5) },
+      blockAt: (p: Vec3) => {
+        const fluid = liquid(p.x, p.z);
+        if (p.y === 64 && fluid !== null) return { name: fluid, boundingBox: 'empty' };
+        if (p.y === 63 && solid(p.x, p.z)) return { name: 'stone', boundingBox: 'block' };
+        return { name: 'air', boundingBox: 'empty' };
+      },
+    } as unknown as Parameters<typeof safeHopYaw>[0];
+  }
+
+  test('never hops toward a cliff', () => {
+    // Solid only to the west (x <= 0); a sheer drop everywhere east.
+    const bot = world((x) => x <= 0);
+    for (let i = 0; i < 50; i++) {
+      const yaw = safeHopYaw(bot);
+      assert.ok(yaw !== null);
+      // mineflayer yaw: facing +x is -PI/2. Anything with an eastward component is unsafe.
+      assert.ok(-Math.sin(yaw) <= 0.001, `hopped east (yaw ${yaw})`);
+    }
+  });
+
+  test('hops in place when every direction is a drop', () => {
+    assert.equal(safeHopYaw(world(() => false)), null);
+  });
+
+  test('does not hop into water', () => {
+    const bot = world(() => true, (x) => (x !== 0 ? 'water' : null));
+    const yaw = safeHopYaw(bot);
+    // Only straight north or south stays dry.
+    assert.ok(yaw !== null && Math.abs(Math.sin(yaw)) < 0.001);
+  });
+});
+
+describe('knowing you are trapped', async () => {
+  const { describeTrap } = await import('../../src/ai/prompt.ts');
+
+  test('a few wedges around one spot say so, with ways out that fit what is carried', () => {
+    const bot = { entity: { position: new Vec3(1410, 52, -158) } } as unknown as Bot;
+    assert.equal(describeTrap(bot, []), null, 'no wedges yet');
+    for (let i = 0; i < 3; i++) rememberWedge(bot);
+    const line = describeTrap(bot, ['spruce_planks', 'stick']) ?? '';
+    assert.match(line, /You are stuck/);
+    assert.match(line, /spruce_planks/);
+    assert.match(line, /a pickaxe would let you dig/);
+  });
+});

@@ -109,11 +109,12 @@ describe('the manifest row', () => {
 });
 
 describe('grouping runs into sessions', () => {
-  const run = (agentId: string, startedAt: string): RunInfo => ({
+  const run = (agentId: string, startedAt: string, lastAt: string | null = null): RunInfo => ({
     runId: `${agentId}-${startedAt}`,
     agentId,
     startedAt,
     endedAt: null,
+    lastAt,
     decisions: 100,
     model: 'gpt-5.6-luna',
   });
@@ -139,6 +140,27 @@ describe('grouping runs into sessions', () => {
     ]);
     assert.equal(sessions.length, 2);
     assert.deepEqual(sessions[0]?.map((r) => r.agentId), ['bob', 'alice']);
+  });
+
+  test('agents launched in two batches that then ran side by side are one session', () => {
+    // 2026-09-22: two pairs 3.5 minutes apart, four hours together. The
+    // start-time window alone reported on half of them.
+    const sessions = groupSessions([
+      run('alice', '2026-09-22T05:03:00Z', '2026-09-22T09:07:00Z'),
+      run('dmitri', '2026-09-22T05:03:01Z', '2026-09-22T09:07:00Z'),
+      run('carla', '2026-09-22T05:06:36Z', '2026-09-22T09:07:00Z'),
+      run('bob', '2026-09-22T05:06:39Z', '2026-09-22T09:07:00Z'),
+    ]);
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0]?.length, 4);
+  });
+
+  test('a run that had stopped before the next began is its own session', () => {
+    const sessions = groupSessions([
+      run('alice', '2026-09-09T15:13:39Z', '2026-09-09T15:15:00Z'),
+      run('alice', '2026-09-09T15:21:45Z', '2026-09-09T16:00:00Z'),
+    ]);
+    assert.equal(sessions.length, 2);
   });
 
   test('newest session first', () => {

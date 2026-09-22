@@ -188,7 +188,7 @@ describe('loading recorded decisions', () => {
        VALUES ('r1', 'bob', '2026-09-09T15:00:01Z', 'decision', ?)`,
     ).run(JSON.stringify({ cycle, tools, args: tools.map(() => ({})), model: 'gpt-5.6-luna', summary: 's' }));
   };
-  const run = { runId: 'r1', agentId: 'bob', startedAt: '', endedAt: null, decisions: 2, model: 'gpt-5.6-luna' };
+  const run = { runId: 'r1', agentId: 'bob', startedAt: '', endedAt: null, lastAt: null, decisions: 2, model: 'gpt-5.6-luna' };
 
   test('inputs are joined to what was originally decided in them', () => {
     const d = db();

@@ -159,11 +159,12 @@ export const TOOL_SCHEMAS: readonly ToolSchema[] = [
     name: 'attack_entity',
     description:
       'Chase and attack the nearest animal or monster of a type until it dies: ' +
-      'hunting for food (cow, pig, sheep, chicken, rabbit, salmon, cod) or ' +
+      'hunting for food (cow, pig, sheep, chicken, rabbit) or ' +
       'fighting something attacking you (zombie, skeleton, spider). Equips ' +
       'your best sword or axe first. Only creatures -- players and other agents ' +
       'cannot be attacked. Walks over what it drops to pick it up. Fails ' +
-      'with not_found if none is within 24 blocks.',
+      'with not_found if none is within 40 blocks, saying what is in sight ' +
+      'instead. Fish and other water creatures cannot be hunted.',
     parameters: object({
       target: str('Creature type, e.g. cow, zombie.'),
     }),

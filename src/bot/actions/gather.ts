@@ -24,7 +24,7 @@ import { Vec3 } from 'vec3';
 
 import { canHarvest } from '../harvest.ts';
 import { PICKED_NOT_DUG, RIPE_AGE, cropAge, isRipe } from './farming.ts';
-import { navigateTo } from './movement.ts';
+import { SAFE_FALL, navigateTo } from './movement.ts';
 import type { ActionContext } from './run.ts';
 import { ActionFailure } from './run.ts';
 import type { ActionResult } from './types.ts';
@@ -78,6 +78,8 @@ const MAX_DROPS_PER_SWEEP = 12;
  */
 export const DEFAULT_MINE_TIMEOUT_MS = 45_000;
 
+/** How far down to look for a floor before calling it a long drop. */
+const DROP_SCAN = 10;
 /** How many blocks of a crop to look at, to find ripe ones among the green. */
 const CROP_SEARCH = 64;
 /** The item that replants a harvested crop. */
@@ -190,6 +192,15 @@ export function createGatherActions(ctx: ActionContext) {
     }
 
     return parts.join('; ');
+  }
+
+  /** How far the bot would fall if the block at `position` were gone. */
+  function dropBelow(position: Vec3): number {
+    for (let depth = 1; depth <= DROP_SCAN; depth++) {
+      const block = bot.blockAt(position.offset(0, -depth, 0));
+      if (block === null || block.boundingBox === 'block' || block.name === 'water') return depth - 1;
+    }
+    return DROP_SCAN;
   }
 
   async function approach(block: Block, timeoutMs: number, signal: AbortSignal): Promise<void> {
@@ -421,6 +432,24 @@ export function createGatherActions(ctx: ActionContext) {
             bot.pathfinder.setGoal(null);
             bot.clearControlStates();
             await sleep(DIG_SETTLE_MS);
+
+            // Never dig out the floor over a long drop. The block underfoot is
+            // what the bot stands on; below it may be a cave, and one of the
+            // six fatal falls on 2026-09-22 came straight after a dig.
+            const underfoot = bot.entity.position.floored().offset(0, -1, 0);
+            if (fresh.position.equals(underfoot)) {
+              // Digging it opens its own space too: the fall is one more
+              // than the air found beneath it.
+              const drop = dropBelow(fresh.position) + 1;
+              if (drop > SAFE_FALL) {
+                if (positions.length > 0) break;
+                throw new ActionFailure(
+                  'blocked',
+                  `that ${fresh.name} is the block you are standing on, with a ${drop >= DROP_SCAN ? `${DROP_SCAN}+` : drop}-block ` +
+                    'drop beneath it -- digging it would drop you. Stand beside it instead.',
+                );
+              }
+            }
 
             if (!bot.canDigBlock(fresh)) {
               // Reach, not permission -- settling can drift us just outside it.

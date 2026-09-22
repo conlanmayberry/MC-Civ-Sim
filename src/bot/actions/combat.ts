@@ -32,7 +32,25 @@ const { goals } = pathfinderPkg;
  * in 24s with the rest of the budget spent chasing.
  */
 export const DEFAULT_ATTACK_TIMEOUT_MS = 45_000;
-const SEARCH_RADIUS = 24;
+/**
+ * 40, up from 24. On 2026-09-22 about eighty hunts failed "no cow within 24
+ * blocks" -- then no sheep, then no chicken, a turn each -- around a base
+ * where the nearest animals had been hunted out to further than that.
+ */
+const SEARCH_RADIUS = 40;
+/** How far to look when saying what IS around, after the target is not. */
+const IN_SIGHT_RADIUS = 64;
+
+/**
+ * Creatures that live in water.
+ *
+ * Refused as targets: nothing here can catch them from the shore, and chasing
+ * one is chasing it into deep water. On 2026-09-22, 49 hunts went after cod
+ * and salmon, none landed a hit, and eleven ended in the surfacing reflex.
+ */
+export const WATER_CREATURES = new Set([
+  'cod', 'salmon', 'tropical_fish', 'pufferfish', 'squid', 'glow_squid', 'dolphin', 'axolotl', 'tadpole', 'turtle',
+]);
 /** Vanilla melee reach is 3; a little under, so swings land from where we stop. */
 const REACH = 2.8;
 /** Full-strength swing cooldown for fists and swords is ~0.6s. */
@@ -53,8 +71,38 @@ const WEAPONS = [
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** Entity kinds worth naming as something to hunt or fight. Not players, items or bats. */
+const HUNTABLE_KINDS = new Set(['animal', 'hostile', 'passive', 'mob']);
+
+/** Standing in water at least two deep: reaching it means swimming. */
+export function inDeepWater(bot: Bot, entity: Entity): boolean {
+  const at = entity.position.floored();
+  const here = bot.blockAt(at);
+  const below = bot.blockAt(at.offset(0, -1, 0));
+  return here?.name === 'water' && below?.name === 'water';
+}
+
 export function createCombatActions(ctx: ActionContext) {
   const { bot, runner } = ctx;
+
+  /** "zombie 12m, chicken 38m" -- what could be hunted or fought right now. */
+  function creaturesInSight(): string {
+    const seen = new Map<string, number>();
+    for (const entity of Object.values(bot.entities)) {
+      if (entity === bot.entity || entity.name === undefined || WATER_CREATURES.has(entity.name)) continue;
+      // String, not the typed union: prismarine-entity's typings omit
+      // "animal", which is what the server actually reports for livestock.
+      if (!HUNTABLE_KINDS.has(String(entity.type))) continue;
+      const d = entity.position.distanceTo(bot.entity.position);
+      if (d > IN_SIGHT_RADIUS) continue;
+      if (!seen.has(entity.name) || d < (seen.get(entity.name) ?? Infinity)) seen.set(entity.name, d);
+    }
+    return [...seen.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .slice(0, 6)
+      .map(([n, d]) => `${n} ${Math.round(d)}m`)
+      .join(', ');
+  }
 
   function nearest(name: string): Entity | null {
     let best: Entity | null = null;
@@ -91,9 +139,29 @@ export function createCombatActions(ctx: ActionContext) {
           if (bot.players[target] !== undefined || Object.values(bot.players).some((p) => p.username.toLowerCase() === name)) {
             throw new ActionFailure('invalid_argument', 'players and agents cannot be attacked -- only animals and monsters');
           }
+          if (WATER_CREATURES.has(name)) {
+            throw new ActionFailure(
+              'invalid_argument',
+              `${name} live in water: they cannot be caught from land, and chasing them leads into deep water, ` +
+                'which is how agents drown. Hunt land animals instead.',
+            );
+          }
           const entity = nearest(name);
           if (entity === null) {
-            throw new ActionFailure('not_found', `no ${name} within ${SEARCH_RADIUS} blocks`);
+            // Say what IS here, so the next turn is not a guess at another
+            // animal that is not there either.
+            const around = creaturesInSight();
+            throw new ActionFailure(
+              'not_found',
+              `no ${name} within ${SEARCH_RADIUS} blocks -- ` +
+                (around === '' ? 'no creatures in sight at all; go somewhere else to hunt' : `in sight: ${around}`),
+            );
+          }
+          if (inDeepWater(bot, entity)) {
+            throw new ActionFailure(
+              'blocked',
+              `the ${name} is in deep water; fighting it there is how agents drown -- wait for it on land, or leave it`,
+            );
           }
 
           const weapon = await equipBestWeapon();
@@ -131,6 +199,14 @@ export function createCombatActions(ctx: ActionContext) {
               if (died || gone) break;
 
               const distance = entity.position.distanceTo(bot.entity.position);
+              // It swam off: following it now means swimming after it.
+              if (distance > REACH && inDeepWater(bot, entity)) {
+                throw new ActionFailure(
+                  'blocked',
+                  `the ${name} went into deep water after ${swings} hit(s); not following it in`,
+                  { target: name, hits: swings },
+                );
+              }
               if (distance > LOST_DISTANCE) {
                 throw new ActionFailure('unreachable', `${name} got away (${round2(distance)}m) after ${swings} hit(s)`);
               }
@@ -160,6 +236,16 @@ export function createCombatActions(ctx: ActionContext) {
             bot.removeListener('entityDead', onDead);
             bot.removeListener('entitySpawn', onSpawn);
             bot.pathfinder.setGoal(null);
+          }
+
+          if (!died && swings > 0 && bot.entities[entity.id] === undefined) {
+            // Gone from view after being hit. If its drops or experience are
+            // lying where it stood, it died and was removed before the drop
+            // listener saw anything -- counted as "lost sight" twice before.
+            await sleep(600);
+            died = Object.values(bot.entities).some(
+              (e) => (e.name === 'item' || e.name === 'experience_orb') && e.position.distanceTo(entity.position) <= DROP_NEAR + 1,
+            );
           }
 
           if (!died) {

@@ -98,7 +98,63 @@ interface ExtraMovements {
   liquidCost: number;
   allowParkour: boolean;
   allowSprinting: boolean;
-  exclusionAreasStep: Array<(block: { position?: Vec3 }) => number>;
+  maxDropDown: number;
+  scafoldingBlocks: number[];
+  exclusionAreasStep: Array<(block: { position?: Vec3; name?: string }) => number>;
+  exclusionAreasBreak: Array<(block: { position?: Vec3; name?: string }) => number>;
+}
+
+/**
+ * Fields are walked around, and never dug through.
+ *
+ * Caught by the harvest scenario: working a field, the bot broke farmland to
+ * path across it (picking up the dirt) and trampled crops it was not
+ * harvesting, which then could not be replanted. Crops have no collision, so
+ * pathfinder saw a field as open ground. Walking through stays possible when
+ * there is no other way; digging it effectively is not.
+ */
+const FIELD_BLOCKS = new Set(['farmland', 'wheat', 'carrots', 'potatoes', 'beetroots', 'melon_stem', 'pumpkin_stem']);
+const FIELD_STEP_COST = 15;
+const FIELD_BREAK_COST = 90;
+
+/**
+ * The furthest a bot can fall without being hurt: fall damage is the distance
+ * fallen less three.
+ *
+ * Note pathfinder's maxDropDown measures differently -- from the feet to the
+ * block landed ON, one more than the fall -- so its default of 4 already
+ * means a harmless three-block fall. Setting it to 3 on the reading that 4
+ * "costs a heart" left a bot unable to step down off a three-high wall: an
+ * arena bot built itself out of a pit and then could not get down the other
+ * side. Falls were the leading cause of death on 2026-09-22, but not from
+ * pathfinder's own drops; see unstick and mine_block's floor check.
+ */
+export const SAFE_FALL = 3;
+
+/**
+ * Blocks pathfinder may stack under the bot or bridge with. Its default is
+ * dirt and cobblestone only, so an agent in a pit with a stack of planks had
+ * no way up: Alice spent 81 minutes on 2026-09-22 at the bottom of a ravine
+ * holding six spruce planks, trying to build a staircase by hand.
+ *
+ * Common rubble is always allowed. Planks and stone only on a retry, because
+ * they are what agents build with -- a routine walk should not quietly spend
+ * a builder's wall.
+ */
+const RUBBLE = ['dirt', 'cobblestone', 'cobbled_deepslate', 'andesite', 'diorite', 'granite', 'netherrack', 'tuff'];
+const BUILDING = ['stone', 'deepslate', 'sandstone', 'coarse_dirt', 'mud', 'blackstone'];
+
+function scaffoldIds(bot: Bot, careful: boolean): number[] {
+  const names = [...RUBBLE];
+  if (careful) {
+    names.push(...BUILDING);
+    for (const name of Object.keys(bot.registry.itemsByName)) {
+      if (name.endsWith('_planks')) names.push(name);
+    }
+  }
+  return names
+    .map((name) => bot.registry.itemsByName[name]?.id)
+    .filter((id): id is number => id !== undefined);
 }
 
 /**
@@ -114,10 +170,14 @@ export function movementsFor(bot: Bot, careful = false): InstanceType<typeof Mov
   // Present at runtime (movements.js) but missing from the bundled typings.
   const extra = movements as unknown as ExtraMovements;
   extra.liquidCost = WATER_COST;
+  extra.maxDropDown = SAFE_FALL + 1;
+  extra.scafoldingBlocks = scaffoldIds(bot, careful);
   if (careful) {
     extra.allowParkour = false;
     extra.allowSprinting = false;
   }
+  extra.exclusionAreasStep.push((block) => (block.name !== undefined && FIELD_BLOCKS.has(block.name) ? FIELD_STEP_COST : 0));
+  extra.exclusionAreasBreak.push((block) => (block.name !== undefined && FIELD_BLOCKS.has(block.name) ? FIELD_BREAK_COST : 0));
   const spots = recentWedges(bot);
   if (spots.length > 0) {
     // pathfinder also passes placeholder blocks for unloaded space, which
@@ -297,7 +357,11 @@ export async function navigateTo(
     // from further away, through the same obstacle.
     if (outcome === 'wandered') break;
     const thinkingTimedOut = outcome === 'no_path' && isThinkingTimeout(detail);
-    if (outcome !== 'wedged' && outcome !== 'timeout' && !thinkingTimedOut) break;
+    // One more try when the first found no path at all: the retry may build
+    // with planks and stone (see scaffoldIds), which is sometimes the only
+    // way out of a hole.
+    const worthCarefulRetry = outcome === 'no_path' && failures === 0;
+    if (outcome !== 'wedged' && outcome !== 'timeout' && !thinkingTimedOut && !worthCarefulRetry) break;
     if (bot.entity.position.distanceTo(target) <= range + 1) {
       outcome = 'reached';
       break;
@@ -358,14 +422,47 @@ async function detour(bot: Bot, target: Vec3, signal: AbortSignal, budgetMs: num
 
 /** Hop and turn, to shake loose whatever geometry the wedge caught on. */
 async function unstick(bot: Bot): Promise<void> {
+  // Two of the six fatal falls on 2026-09-22 came straight after a stuck move:
+  // this used to hop forward in any direction at all, ledges included.
+  const yaw = safeHopYaw(bot);
   try {
-    await bot.look(Math.random() * Math.PI * 2, 0, true);
+    if (yaw !== null) await bot.look(yaw, 0, true);
     bot.setControlState('jump', true);
-    bot.setControlState('forward', true);
+    bot.setControlState('forward', yaw !== null);
     await new Promise((r) => setTimeout(r, UNSTICK_MS));
   } finally {
     bot.clearControlStates();
   }
+}
+
+const HOP_DIRECTIONS: ReadonlyArray<[number, number]> = [
+  [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1],
+];
+
+/**
+ * A direction to hop that does not go over a drop or into water or lava, or
+ * null to hop in place. Checks two blocks ahead, since a hop carries that far.
+ */
+export function safeHopYaw(bot: Pick<Bot, 'entity' | 'blockAt'>): number | null {
+  const feet = bot.entity.position.floored();
+  const landsSafely = (dx: number, dz: number): boolean => {
+    const column = feet.offset(dx, 0, dz);
+    const here = bot.blockAt(column);
+    if (here === null || here.name === 'water' || here.name === 'lava') return false;
+    for (let down = 1; down <= SAFE_FALL; down++) {
+      const below = bot.blockAt(column.offset(0, -down, 0));
+      if (below === null) return false;
+      if (below.name === 'water' || below.name === 'lava') return false;
+      if (below.boundingBox === 'block') return true;
+    }
+    return false;
+  };
+  const start = Math.floor(Math.random() * HOP_DIRECTIONS.length);
+  for (let i = 0; i < HOP_DIRECTIONS.length; i++) {
+    const [dx, dz] = HOP_DIRECTIONS[(start + i) % HOP_DIRECTIONS.length] ?? [0, 0];
+    if (landsSafely(dx, dz) && landsSafely(dx * 2, dz * 2)) return Math.atan2(-dx, -dz);
+  }
+  return null;
 }
 
 /**

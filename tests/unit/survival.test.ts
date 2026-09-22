@@ -68,3 +68,22 @@ describe('beds', () => {
     assert.match(explainSleepRefusal('This bed is occupied'), /already in that bed/);
   });
 });
+
+describe('hunting', async () => {
+  const { WATER_CREATURES, inDeepWater } = await import('../../src/bot/actions/combat.ts');
+
+  test('fish are not hunting targets', () => {
+    assert.ok(WATER_CREATURES.has('cod'));
+    assert.ok(WATER_CREATURES.has('salmon'));
+    assert.ok(!WATER_CREATURES.has('cow'));
+  });
+
+  test('deep water is two blocks of it; a puddle is not', () => {
+    const botWith = (depth: number) => ({
+      blockAt: (p: { y: number }) => ({ name: p.y > 63 - depth ? 'water' : 'stone' }),
+    }) as never;
+    const entity = { position: { floored: () => ({ y: 63, offset: (_x: number, dy: number) => ({ y: 63 + dy }) }) } } as never;
+    assert.equal(inDeepWater(botWith(1), entity), false);
+    assert.equal(inDeepWater(botWith(3), entity), true);
+  });
+});

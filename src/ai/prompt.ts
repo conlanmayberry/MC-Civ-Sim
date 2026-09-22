@@ -29,7 +29,7 @@ import {
 } from '../bot/observations.ts';
 import { describeArmor, wornArmor } from '../bot/actions/armor.ts';
 import { observeCrops } from '../bot/actions/farming.ts';
-import { lastSeen } from '../bot/actions/movement.ts';
+import { lastSeen, recentWedges } from '../bot/actions/movement.ts';
 import type { AgentIdentity } from '../agent/identity.ts';
 import { toPromptFragment } from '../agent/identity.ts';
 import type { HeardMessage } from '../agent/hearing.ts';
@@ -290,6 +290,12 @@ export function buildObservation(
     );
   }
 
+  // Stuck. Agents spent 40% of the 2026-09-22 session within four blocks of
+  // one spot -- in a flooded ravine, in a cave -- re-issuing moves that
+  // wedged, because nothing said "you are trapped" or what gets you out.
+  const trapped = describeTrap(bot, inventory.items.map((i) => i.name));
+  if (trapped !== null) lines.push(trapped);
+
   const hostiles = nearbyHostiles(bot, ENTITY_RADIUS);
   if (hostiles.length > 0) {
     lines.push(
@@ -397,6 +403,33 @@ export function buildObservation(
   if (text !== '') lines.push(text);
 
   return lines.join('\n');
+}
+
+/** Movement failures around one spot, in the last ten minutes, before it counts as trapped. */
+const TRAPPED_AFTER = 3;
+const TRAP_RADIUS = 5;
+
+/** Blocks that can be stacked to climb out of a hole. */
+const CLIMBING_BLOCKS = /^(dirt|cobblestone|cobbled_deepslate|stone|andesite|diorite|granite|deepslate|netherrack|tuff|sandstone|.*_planks)$/;
+
+/** A line saying the agent is stuck here and what could get it out, or null. */
+export function describeTrap(bot: Bot, carrying: readonly string[]): string | null {
+  const here = bot.entity?.position;
+  if (here === undefined) return null;
+  const nearby = recentWedges(bot).filter((w) => Math.hypot(w.x - here.x, w.z - here.z) <= TRAP_RADIUS);
+  if (nearby.length < TRAPPED_AFTER) return null;
+
+  const ways: string[] = [];
+  const pickaxe = carrying.find((n) => n.endsWith('_pickaxe'));
+  ways.push(pickaxe === undefined ? 'a pickaxe would let you dig through stone quickly' : `dig through with your ${pickaxe}`);
+  const blocks = carrying.filter((n) => CLIMBING_BLOCKS.test(n));
+  ways.push(
+    blocks.length > 0
+      ? `move_to somewhere higher can now build up with your ${blocks.slice(0, 2).join(' or ')}`
+      : 'carrying dirt, cobblestone or planks would let you build your way up',
+  );
+  ways.push('or try a completely different direction');
+  return `You are stuck: moving has failed ${nearby.length} times around this spot in the last few minutes. Ways out: ${ways.join('; ')}.`;
 }
 
 /** Dusk starts at 12,000 ticks and mobs at about 13,000; a day is 20 minutes of 24,000. */

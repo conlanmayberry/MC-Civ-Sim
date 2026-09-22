@@ -844,3 +844,51 @@ Undefined now reads as full, everywhere air is read.
 
 The research world runs with `doDaylightCycle` off, frozen at midday. Until
 that changes, beds matter only as respawn points and nightfall never comes.
+
+## ADR-015 — Getting out of holes, hunting what is there, and falls
+
+**Date:** 2026-09-22 (Stage 5)
+**Status:** accepted
+
+The four-hour session of 2026-09-22 cut deaths fourfold, but agents spent
+about 40% of their time within four blocks of one spot -- in a flooded ravine,
+in a cave -- and falls became the leading cause of death.
+
+### Decisions
+
+**Build out of holes with what is carried.** Pathfinder only builds up with
+dirt or cobblestone by default; Alice spent 81 minutes at the bottom of a
+ravine holding six spruce planks. Common rubble is now always allowed, and a
+retry (after a failure, including a first "no path") may also use planks and
+stone. Not on a first attempt, so routine walks do not spend a builder's wall.
+
+**Say when an agent is stuck, and what would get it out.** Three failed moves
+around one spot in ten minutes put a line in the observation, fitted to what
+it carries: a pickaxe to dig with, or blocks to build up with.
+
+**Hunt what is there.** A failed hunt names the creatures in sight, instead of
+leaving the agent to guess cow, sheep, chicken, pig in turn -- about eighty
+failed turns in one session. The search reaches 40 blocks. Fish are refused:
+nothing here can catch them, and 49 hunts after them led only into deep water.
+Nothing is chased into deep water mid-fight either.
+
+**Falls.** The unstick hop looks before it leaps -- it used to hop in any
+direction at all -- and mine_block will not dig out the floor under the bot
+over a drop that would hurt.
+
+**Fields are walked around.** Crops have no collision, so pathfinder treated a
+field as open ground, dug farmland to cross it, and trampled crops it was not
+harvesting. Stepping through a field now costs extra, and digging one costs
+nearly as much as it can.
+
+**Sessions are runs that overlapped.** The agents were launched in two pairs
+3.5 minutes apart, and the doctor, grouping by start time within two minutes,
+reported on half of them.
+
+### A mistake worth recording
+
+pathfinder's `maxDropDown` counts from the feet to the block landed *on* --
+one more than the fall. Its default of 4 is a harmless three-block fall.
+Lowering it to 3, on the reading that 4 "costs a heart", left an arena bot
+that had just built itself out of a pit unable to step down the far side. It
+is back at 4, and the fall arithmetic lives in one constant, SAFE_FALL.
