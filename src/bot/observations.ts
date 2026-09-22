@@ -25,6 +25,8 @@ import type { Bot } from 'mineflayer';
 import type { Entity } from 'prismarine-entity';
 import { Vec3 } from 'vec3';
 
+import { air } from './reflexes.ts';
+
 export interface Position {
   x: number;
   y: number;
@@ -124,7 +126,8 @@ export function observeSelf(bot: Bot): SelfObservation {
     health: bot.health,
     food: bot.food,
     foodSaturation: round2(bot.foodSaturation),
-    oxygen: bot.oxygenLevel,
+    // Undefined until air first changes, which means full (see reflexes.ts).
+    oxygen: air(bot),
     dimension: bot.game.dimension,
     gameMode: bot.game.gameMode,
     timeOfDay: bot.time.timeOfDay,

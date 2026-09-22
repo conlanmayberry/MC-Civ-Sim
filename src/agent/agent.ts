@@ -103,6 +103,9 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 /** Hunger and health thresholds that justify thinking early. */
 const LOW_FOOD = 6;
+const LOW_HEALTH = 10;
+/** How much longer the loop waits between turns while the agent is asleep. */
+const ASLEEP_INTERVAL_FACTOR = 4;
 /** Wake at most this often for threats, so a mob does not become a chat storm of its own. */
 const THREAT_NUDGE_MS = 15_000;
 /** A hostile this close when damage lands is taken to be the attacker. Skeletons shoot from ~15. */
@@ -121,7 +124,6 @@ const INTERRUPTIBLE_BY_ATTACK = new Set([
 const APPROACH_NUDGE_MS = 60_000;
 /** A hostile this close is worth a (non-urgent) look before it attacks. */
 const APPROACH_RADIUS = 10;
-const LOW_HEALTH = 10;
 /**
  * Give up after this many failures in a row.
  *
@@ -702,7 +704,11 @@ export function createAgent(options: AgentOptions): Agent {
           continue;
         }
         noOpStreak = 0;
-        await waker.wait(options.intervalMs);
+        // Asleep, there is little to decide until morning or until someone
+        // needs you -- and being addressed, attacked or hungry still wakes the
+        // loop at once. A night is about nine minutes; thinking at the usual
+        // rate through it would be most of a night's spend on "still asleep".
+        await waker.wait(bot.isSleeping === true ? options.intervalMs * ASLEEP_INTERVAL_FACTOR : options.intervalMs);
       }
 
       log.event('agent_stopped', {

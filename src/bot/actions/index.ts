@@ -13,11 +13,14 @@ import pathfinderPkg from 'mineflayer-pathfinder';
 
 import type { Logger } from '../../util/log.ts';
 import { startReflexes } from '../reflexes.ts';
+import { createArmorActions } from './armor.ts';
 import { createCombatActions } from './combat.ts';
 import { createContainerActions } from './containers.ts';
 import { createCraftActions } from './craft.ts';
+import { createFarmingActions } from './farming.ts';
 import { createGatherActions } from './gather.ts';
 import { createMovementActions, trackPlayers } from './movement.ts';
+import { createRestActions, leaveBed } from './rest.ts';
 import { createActionRunner } from './run.ts';
 import { createSurviveActions } from './survive.ts';
 
@@ -41,6 +44,9 @@ export interface Actions {
   smeltItem: ReturnType<typeof createContainerActions>['smeltItem'];
   storeItems: ReturnType<typeof createContainerActions>['storeItems'];
   takeItems: ReturnType<typeof createContainerActions>['takeItems'];
+  plantCrop: ReturnType<typeof createFarmingActions>['plantCrop'];
+  sleepInBed: ReturnType<typeof createRestActions>['sleepInBed'];
+  wearArmor: ReturnType<typeof createArmorActions>['wearArmor'];
   /** True while an action holds the bot. */
   busy: () => boolean;
   /** Name of the running action, if any. */
@@ -64,7 +70,13 @@ export function createActions(bot: Bot, log: Logger): Actions {
   // cheaper than a failed turn.
   bot.pathfinder.thinkTimeout = 10_000;
 
-  const runner = createActionRunner(log);
+  const runner = createActionRunner(log, {
+    // Out of bed before doing anything else. A sleeping player cannot move,
+    // dig or place; the action would fail for a reason the agent cannot see.
+    async before(spec) {
+      if (spec.action !== 'sleep_in_bed' && bot.isSleeping) await leaveBed(bot);
+    },
+  });
   const ctx = { bot, log, runner };
 
   const movement = createMovementActions(ctx);
@@ -73,6 +85,9 @@ export function createActions(bot: Bot, log: Logger): Actions {
   const survive = createSurviveActions(ctx);
   const combat = createCombatActions(ctx);
   const containers = createContainerActions(ctx);
+  const farming = createFarmingActions(ctx);
+  const rest = createRestActions(ctx);
+  const armor = createArmorActions(ctx);
   const reflexes = startReflexes(bot, runner, log);
   trackPlayers(bot);
 
@@ -91,6 +106,9 @@ export function createActions(bot: Bot, log: Logger): Actions {
     smeltItem: containers.smeltItem,
     storeItems: containers.storeItems,
     takeItems: containers.takeItems,
+    plantCrop: farming.plantCrop,
+    sleepInBed: rest.sleepInBed,
+    wearArmor: armor.wearArmor,
     busy: runner.busy,
     current: runner.current,
     interrupt: runner.interrupt,

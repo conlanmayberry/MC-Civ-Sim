@@ -46,6 +46,20 @@ export function headUnderwater(bot: Bot): boolean {
   return properties['waterlogged'] === true || properties['waterlogged'] === 'true';
 }
 
+/**
+ * Air, out of 20.
+ *
+ * mineflayer leaves oxygenLevel undefined until the server first reports a
+ * change, which happens only once the head goes under. Undefined therefore
+ * means full -- and read raw, `undefined > 14` is false, so every bot standing
+ * in water one block deep counted as out of air. That fired the reflex in the
+ * middle of a wheat harvest beside a water channel in the arena.
+ */
+export function air(bot: Bot): number {
+  const level = bot.oxygenLevel as number | undefined;
+  return typeof level === 'number' && Number.isFinite(level) ? level : 20;
+}
+
 export interface Reflexes {
   /** Called when a reflex has finished, with what happened, so the agent can be told. */
   onReflex: (listener: (what: string) => void) => void;
@@ -66,7 +80,7 @@ export function startReflexes(bot: Bot, runner: ActionRunner, log: Logger): Refl
     engagedAt = null;
     bot.clearControlStates();
     runner.hold(null);
-    log.event('reflex', { reflex: 'surface', outcome, durationMs, lowestOxygen, oxygen: bot.oxygenLevel });
+    log.event('reflex', { reflex: 'surface', outcome, durationMs, lowestOxygen, oxygen: air(bot) });
     if (outcome === 'died') return;
     const what =
       outcome === 'surfaced'
@@ -105,10 +119,10 @@ export function startReflexes(bot: Bot, runner: ActionRunner, log: Logger): Refl
       // (it does not track pose), so air ran down to 8 with "head" in the air
       // block above. In water with air going, that is enough. (Not air alone:
       // mineflayer reads 0 until the server first sends it.)
-      if (!(underwater || inWater) || bot.oxygenLevel > SURFACE_BELOW_OXYGEN) return;
+      if (!(underwater || inWater) || air(bot) > SURFACE_BELOW_OXYGEN) return;
       engagedAt = Date.now();
       lastTurn = engagedAt;
-      lowestOxygen = bot.oxygenLevel;
+      lowestOxygen = air(bot);
       // Taking the hold first aborts the running action, whose own cleanup
       // clears the pathfinder goal; clearing here too covers an idle bot.
       runner.hold('interrupted to swim up for air before drowning');
@@ -118,10 +132,10 @@ export function startReflexes(bot: Bot, runner: ActionRunner, log: Logger): Refl
       return;
     }
 
-    lowestOxygen = Math.min(lowestOxygen, bot.oxygenLevel);
+    lowestOxygen = Math.min(lowestOxygen, air(bot));
     const elapsed = Date.now() - engagedAt;
 
-    if (!underwater && bot.oxygenLevel >= 20) {
+    if (!underwater && air(bot) >= 20) {
       release('surfaced');
       return;
     }

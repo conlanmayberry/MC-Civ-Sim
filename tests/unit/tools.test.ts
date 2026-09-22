@@ -76,6 +76,8 @@ describe('tool schemas', () => {
       'mine_block',
       'move_to',
       'place_block',
+      // Tills and plants ground in the world; nothing outside it.
+      'plant_crop',
       // Records a name and a coordinate the agent already had. It reads
       // nothing and reaches nothing outside the process.
       'remember_place',
@@ -83,11 +85,14 @@ describe('tool schemas', () => {
       // set_goal only stores a string the agent shows itself next turn. It
       // touches nothing outside the process.
       'set_goal',
+      // A bed in the world.
+      'sleep_in_bed',
       // Furnace and chest windows in the game world, nothing outside it.
       'smelt_item',
       'stop_movement',
       'store_items',
       'take_items',
+      'wear_armor',
     ]);
     // Principle 16: nothing that runs code, reads files or touches the host.
     for (const name of names) {
@@ -157,6 +162,18 @@ function stubActions(record: string[]): Actions {
     takeItems: async (item, count) => {
       record.push(`takeItems(${String(item)},${String(count)})`);
       return ok('take_items');
+    },
+    plantCrop: async (seed, count) => {
+      record.push(`plantCrop(${seed},${count})`);
+      return ok('plant_crop');
+    },
+    sleepInBed: async () => {
+      record.push('sleepInBed()');
+      return ok('sleep_in_bed');
+    },
+    wearArmor: async () => {
+      record.push('wearArmor()');
+      return ok('wear_armor');
     },
     busy: () => false,
     current: () => null,

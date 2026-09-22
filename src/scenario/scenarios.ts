@@ -33,6 +33,7 @@ import { createPlaces } from '../agent/places.ts';
 import { createBudget, DEFAULT_LIMITS } from '../ai/budget.ts';
 import type { AiProvider } from '../ai/provider.ts';
 import { observeEntities } from '../bot/observations.ts';
+import { air } from '../bot/reflexes.ts';
 import { createLogger } from '../util/log.ts';
 import type { Arena, Point, ScenarioBot } from './arena.ts';
 import { ARENA, at } from './arena.ts';
@@ -472,7 +473,7 @@ const surfaceForAir: Scenario = {
     const sampleFrom = Date.now() + 1_500;
     const watch = setInterval(() => {
       if (Date.now() < sampleFrom) return;
-      lowest = Math.min(lowest, a.bot.oxygenLevel);
+      lowest = Math.min(lowest, air(a.bot));
       lowestHealth = Math.min(lowestHealth, a.bot.health);
     }, 250);
     await until(() => died, 35_000, 250);
@@ -624,6 +625,147 @@ const notFoundSuggests: Scenario = {
     return !mine.ok && mine.error?.code === 'not_found' && mine.error.message.includes('cow')
       ? pass(mine.error.message)
       : fail(`mine_block said ${describeFailure(mine)}`);
+  },
+};
+
+/** Planting: tilling with a hoe, then seeds, preferring ground near water. */
+const plantWheat: Scenario = {
+  id: 'plant_wheat',
+  title: 'plant_crop tills a dirt patch and plants wheat by the water',
+  live: false,
+  timeoutMs: 90_000,
+  async run({ arena }) {
+    await arena.fill(at(2, -2), at(6, 2), 'dirt');
+    await arena.setBlock(at(4, 0), 'water');
+    const a = await arena.spawn('ScenAlpha', at(0, 0));
+    await arena.give(a.name, 'wooden_hoe', 1);
+    await arena.give(a.name, 'wheat_seeds', 4);
+
+    const plant = await a.actions.plantCrop('wheat_seeds', 4);
+    if (!plant.ok) return fail(`plant_crop: ${describeFailure(plant)}`);
+    let wheat = 0;
+    for (let dx = 2; dx <= 6; dx++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        const p = at(dx, dz, 1);
+        if (a.bot.blockAt(new Vec3(p.x, p.y, p.z))?.name === 'wheat') wheat++;
+      }
+    }
+    return wheat === 4 && plant.detail['dryPlots'] === undefined
+      ? pass(`4 wheat planted, all within reach of water`)
+      : fail(`${wheat}/4 wheat in the ground; plant_crop said ${JSON.stringify(plant.detail)}`);
+  },
+};
+
+/**
+ * Harvesting takes the ripe and leaves the green.
+ *
+ * mine_block used to dig the nearest wheat whatever its stage; unripe wheat
+ * drops a seed and is gone.
+ */
+const harvestRipeOnly: Scenario = {
+  id: 'harvest_ripe_only',
+  title: 'mine_block harvests only ripe wheat, and replants it',
+  live: false,
+  timeoutMs: 90_000,
+  async run({ arena }) {
+    // Water in the middle row, walled in by farmland on every side so it
+    // cannot spill across the arena floor.
+    await arena.fill(at(2, -1), at(5, 1), 'farmland');
+    await arena.setBlock(at(3, 0), 'water');
+    const ripe = [at(2, -1, 1), at(3, -1, 1)];
+    const green = [at(4, -1, 1), at(5, -1, 1)];
+    for (const p of ripe) await arena.setBlock(p, 'wheat[age=7]');
+    for (const p of green) await arena.setBlock(p, 'wheat[age=2]');
+    const a = await arena.spawn('ScenAlpha', at(0, 0));
+
+    const mine = await a.actions.mineBlock('wheat', 4, 16);
+    const block = (p: { x: number; y: number; z: number }) => a.bot.blockAt(new Vec3(p.x, p.y, p.z));
+    const age = (p: { x: number; y: number; z: number }): number | null => {
+      const b = block(p);
+      return b?.name === 'wheat' ? Number(b.getProperties()['age']) : null;
+    };
+    const greenLeft = green.filter((p) => age(p) === 2).length;
+    const replanted = ripe.filter((p) => age(p) === 0).length;
+    const got = countItem(a.bot, 'wheat');
+    return greenLeft === 2 && got >= 2 && replanted === 2
+      ? pass(`harvested ${got} wheat from the 2 ripe, replanted both, left the 2 green`)
+      : fail(`wheat ${got}, green left ${greenLeft}/2, replanted ${replanted}/2; mine_block said ${describeFailure(mine)} ${JSON.stringify(mine.detail)}`);
+  },
+};
+
+/** Berries are picked, not dug: digging a bush gave berries once and then never again. */
+const pickBerries: Scenario = {
+  id: 'pick_berries',
+  title: 'mine_block picks a berry bush and leaves it standing',
+  live: false,
+  timeoutMs: 45_000,
+  async run({ arena }) {
+    await arena.setBlock(at(3, 0), 'dirt');
+    const bush = at(3, 0, 1);
+    await arena.setBlock(bush, 'sweet_berry_bush[age=3]');
+    const a = await arena.spawn('ScenAlpha', at(0, 0));
+
+    const mine = await a.actions.mineBlock('sweet_berry_bush', 1, 16);
+    await until(() => countItem(a.bot, 'sweet_berries') > 0, 3_000);
+    const still = a.bot.blockAt(new Vec3(bush.x, bush.y, bush.z));
+    const berries = countItem(a.bot, 'sweet_berries');
+    return berries > 0 && still?.name === 'sweet_berry_bush'
+      ? pass(`picked ${berries} berries; the bush is still there`)
+      : fail(`berries ${berries}, bush ${still?.name ?? 'gone'}; mine_block said ${describeFailure(mine)}`);
+  },
+};
+
+/** Armour in the pack protects nothing. */
+const wearBestArmor: Scenario = {
+  id: 'wear_best_armor',
+  title: 'wear_armor puts on the best piece for each slot',
+  live: false,
+  timeoutMs: 30_000,
+  async run({ arena }) {
+    const a = await arena.spawn('ScenAlpha', at(0, 0));
+    for (const item of ['leather_chestplate', 'iron_chestplate', 'leather_boots', 'iron_helmet']) {
+      await arena.give(a.name, item, 1);
+    }
+    const wear = await a.actions.wearArmor();
+    if (!wear.ok) return fail(`wear_armor: ${describeFailure(wear)}`);
+    const slot = (i: number): string | null => a.bot.inventory.slots[i]?.name ?? null;
+    const worn = [slot(5), slot(6), slot(7), slot(8)];
+    const expected = ['iron_helmet', 'iron_chestplate', null, 'leather_boots'];
+    return JSON.stringify(worn) === JSON.stringify(expected) && countItem(a.bot, 'leather_chestplate') === 1
+      ? pass(`wearing ${String(wear.detail['wearing'])}`)
+      : fail(`wearing ${JSON.stringify(worn)}, expected ${JSON.stringify(expected)}`);
+  },
+};
+
+/**
+ * Beds, by day or by night: whichever the world clock says it is. The arena
+ * does not change the time, since that would reach the real agents too.
+ */
+const useBed: Scenario = {
+  id: 'use_bed',
+  title: 'sleep_in_bed puts down a carried bed and sleeps, or by day sets the respawn point',
+  live: false,
+  timeoutMs: 60_000,
+  async run({ arena }) {
+    const a = await arena.spawn('ScenAlpha', at(0, 0));
+    await arena.give(a.name, 'white_bed', 1);
+
+    const rest = await a.actions.sleepInBed();
+    if (!rest.ok) return fail(`sleep_in_bed: ${describeFailure(rest)}`);
+    if (rest.detail['placedJustNow'] !== true) return fail('did not put the carried bed down');
+
+    if (rest.detail['sleeping'] === true) {
+      if (!a.bot.isSleeping) return fail('said asleep, but the bot is not in bed');
+      // Any other action gets it up first.
+      const here = a.bot.entity.position;
+      const move = await a.actions.moveTo(here.x + 3, here.y, here.z, 1);
+      return !a.bot.isSleeping && move.ok
+        ? pass('night: slept, then got up to walk')
+        : fail(`still in bed after move_to (${describeFailure(move)})`);
+    }
+    return rest.detail['respawnPoint'] === true
+      ? pass('day: bed placed, respawn point set')
+      : fail(`day: the server did not confirm the respawn point (${String(rest.detail['note'])})`);
   },
 };
 
@@ -860,6 +1002,11 @@ export const SCENARIOS: readonly Scenario[] = [
   placeStepsAside,
   placeOccupied,
   notFoundSuggests,
+  plantWheat,
+  harvestRipeOnly,
+  pickBerries,
+  wearBestArmor,
+  useBed,
   agentsAnswerGroupCall,
   agentFeedsHungryPeer,
   agentFightsBack,

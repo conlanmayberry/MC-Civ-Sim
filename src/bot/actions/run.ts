@@ -65,7 +65,15 @@ export interface ActionContext {
   runner: ActionRunner;
 }
 
-export function createActionRunner(log: Logger): ActionRunner {
+export interface RunnerHooks {
+  /**
+   * Runs inside the mutex before each action body. Used to get a sleeping bot
+   * out of bed: every action except sleeping needs it standing.
+   */
+  before?: (spec: ActionSpec) => Promise<void>;
+}
+
+export function createActionRunner(log: Logger, hooks: RunnerHooks = {}): ActionRunner {
   // A bot has one body. Two actions driving it at once produce nonsense --
   // `moveTo` fighting `mineBlock` for control states, two `craft` calls racing
   // on the same inventory. Rather than interleave, the second caller is told it
@@ -120,6 +128,13 @@ export function createActionRunner(log: Logger): ActionRunner {
 
       let result: ActionResult;
       try {
+        if (hooks.before !== undefined) {
+          try {
+            await hooks.before(spec);
+          } catch {
+            // A hook is preparation; the action itself reports what fails.
+          }
+        }
         const detail = await Promise.race([
           body(controller.signal),
           new Promise<never>((_resolve, reject) => {

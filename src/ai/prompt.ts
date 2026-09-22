@@ -27,6 +27,8 @@ import {
   observePlaceableSpots,
   observeSelf,
 } from '../bot/observations.ts';
+import { describeArmor, wornArmor } from '../bot/actions/armor.ts';
+import { observeCrops } from '../bot/actions/farming.ts';
 import { lastSeen } from '../bot/actions/movement.ts';
 import type { AgentIdentity } from '../agent/identity.ts';
 import { toPromptFragment } from '../agent/identity.ts';
@@ -63,6 +65,8 @@ import { describeOrder } from '../agent/orders.ts';
  */
 export const HISTORY_WINDOW = 14;
 
+/** How far to count crops for the "Crops nearby" line. */
+const CROP_RADIUS = 16;
 const BLOCK_RADIUS = 12;
 const ENTITY_RADIUS = 24;
 const MAX_ENTITIES = 8;
@@ -158,6 +162,10 @@ export function buildSystemPrompt(identity: AgentIdentity): string {
     'Animals are food: attack_entity kills one, and collect_items picks up',
     'the meat it drops. The same tool is how you fight back when a monster is',
     'hurting you -- standing still while a skeleton shoots you gets you killed.',
+    'Animals nearby run out; a field does not. plant_crop sows seeds, and',
+    'harvesting with mine_block takes only ripe crops and replants them.',
+    'Armour you carry protects nothing until you wear it (wear_armor), and a bed',
+    '(sleep_in_bed) passes the night and becomes where you respawn.',
     '',
     'Deep water drowns you. If your head stays under long enough your body will',
     'swim up on its own and abandon whatever you were doing, but go around lakes',
@@ -228,6 +236,11 @@ export function buildObservation(
       : `You are carrying: ${inventory.items.map((i) => `${i.count}x ${i.name}`).join(', ')}.`,
   );
 
+  // What is worn, because nothing else says: an agent with a chestplate in
+  // its pack could not tell it was not wearing it.
+  lines.push(`You are wearing ${describeArmor(wornArmor(bot))}.`);
+  if (bot.isSleeping === true) lines.push('You are asleep in a bed.');
+
   const nearby = blocks.blocks.slice(0, MAX_BLOCK_KINDS);
   lines.push(
     nearby.length === 0
@@ -263,6 +276,17 @@ export function buildObservation(
             `${name}, last seen ${describeAge(seen.ageMs)} at ${Math.round(seen.position.x)},${Math.round(seen.position.y)},${Math.round(seen.position.z)}`,
         )
         .join('; ')}.`,
+    );
+  }
+
+  // Crops and how many are ready -- the block list shows wheat, not whether
+  // it is worth harvesting yet, and harvesting it green destroys it.
+  const crops = observeCrops(bot, CROP_RADIUS);
+  if (crops.length > 0) {
+    lines.push(
+      `Crops nearby: ${crops
+        .map((c) => `${c.name} ${c.total} (${c.ripe} ripe${c.ripe === 0 && c.mostGrown !== null ? `, furthest along ${c.mostGrown}` : ''})`)
+        .join(', ')}.`,
     );
   }
 
@@ -352,7 +376,9 @@ export function buildObservation(
   if (self.oxygen < 20) pressures.push(`You are underwater and running out of air (${self.oxygen}/20).`);
 
   if (self.health <= 10) pressures.push('You are hurt.');
-  if (!self.isDay) pressures.push('It is dark; hostile mobs spawn at night.');
+  if (!self.isDay) {
+    pressures.push('It is dark; hostile mobs spawn at night. Sleeping in a bed (sleep_in_bed) passes the night once everyone is asleep.');
+  }
   else {
     const minutes = minutesToNightfall(self.timeOfDay);
     if (minutes !== null) pressures.push(`Night falls in about ${minutes} minute${minutes === 1 ? '' : 's'}.`);

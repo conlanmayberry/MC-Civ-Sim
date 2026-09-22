@@ -26,6 +26,7 @@
 import type { Bot } from 'mineflayer';
 import { Vec3 } from 'vec3';
 
+import { armorSlotFor } from './armor.ts';
 import { approachBudgetMs, approachPlayer, navigateTo } from './movement.ts';
 import type { ActionContext } from './run.ts';
 import { ActionFailure } from './run.ts';
@@ -189,8 +190,12 @@ export function createSurviveActions(ctx: ActionContext) {
           if (item === null) {
             throw new ActionFailure('insufficient_items', `no ${itemName} in inventory`);
           }
-          await bot.equip(item, destination);
-          return { item: itemName, destination };
+          // Armour "equipped" to the hand protects nothing. The default
+          // destination is hand, so a model that said equip_item
+          // iron_chestplate would have been holding it.
+          const slot = destination === 'hand' ? (armorSlotFor(itemName) ?? 'hand') : destination;
+          await bot.equip(item, slot);
+          return { item: itemName, destination: slot };
         },
       );
     },

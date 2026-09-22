@@ -427,7 +427,7 @@ switch (subcommand) {
       // structures are not something the database knows -- so this is a proxy,
       // and an honest one only alongside actually looking at the world.
       const placed = count(
-        `SELECT COUNT(*) n FROM events WHERE agent_id = ? AND event_type = 'block_placed' AND ok = 1 AND json_extract(data, '$.alreadyThere') IS NULL AND run_id IN (${holes})`,
+        `SELECT COUNT(*) n FROM events WHERE agent_id = ? AND event_type = 'block_placed' AND ok = 1 AND json_extract(data, '$.alreadyThere') IS NULL AND COALESCE(action, 'place_block') = 'place_block' AND run_id IN (${holes})`,
         agentId, ...runs,
       );
 

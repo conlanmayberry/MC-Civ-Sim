@@ -799,3 +799,48 @@ tick, which would have taken the agent process down. It surfaced in an arena
 trace before any agent ran it. Several arena traces also contradicted
 assumptions: mineflayer on 1.21.8 can keep a killed mob in its entity list with
 no death event, so kills are recognised by the drops appearing where it stood.
+
+## ADR-014 — Farming, beds and armour
+
+**Date:** 2026-09-22 (Stage 5)
+**Status:** accepted
+
+### Decisions
+
+**Harvesting takes only ripe crops, and replants.** mine_block used to dig the
+nearest wheat at any growth stage, and unripe wheat drops a seed and is gone,
+so an agent tending a field would have eaten it green. It now skips unripe
+crops (saying how far along the furthest one is), and puts a seed back in each
+spot it harvested. Sweet berry bushes are *picked*, as a player picks them,
+instead of dug up -- digging gave berries once and destroyed the bush.
+`plant_crop` tills with a hoe where needed and prefers ground within four
+blocks of water, where crops grow faster. The observation lists crops nearby
+with how many are ripe.
+
+**Beds are for the night and for respawning.** `sleep_in_bed` sleeps at night
+and, by day, uses the bed the way a player does, which sets the respawn point.
+The server says "Respawn point set" only when the point *changes*, so "you can
+only sleep at night" alone also means the bed is the respawn point. While an
+agent is asleep its loop thinks a quarter as often; being addressed, attacked
+or hungry still wakes it at once. Any other action gets it out of bed first.
+
+**Armour is visible and one call to wear.** The observation says what is worn
+and its armour points, `wear_armor` puts on the best piece for each slot, and
+equip_item sends armour to its slot rather than the hand.
+
+### Found while building it
+
+mineflayer's `bot.wake()` does not work on 1.21.8. It sends player-command
+action 2, which meant "leave bed" until 1.21.6 moved sneaking out of that
+packet and renumbered the rest; on 1.21.8 it means "stop sprinting". Measured
+with the server as the judge, action 0 clears the sleeping position and pose.
+`leaveBed` in rest.ts sends the right one for the version.
+
+mineflayer leaves `oxygenLevel` undefined until the server first reports a
+change, which happens only once the head goes under. Read raw, `undefined > 14`
+is false -- so every bot in water one block deep counted as out of air, and the
+surfacing reflex fired in the middle of a harvest beside a water channel.
+Undefined now reads as full, everywhere air is read.
+
+The research world runs with `doDaylightCycle` off, frozen at midday. Until
+that changes, beds matter only as respawn points and nightfall never comes.

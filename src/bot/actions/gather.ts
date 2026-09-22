@@ -20,8 +20,10 @@
 
 import type { Bot } from 'mineflayer';
 import type { Block } from 'prismarine-block';
+import { Vec3 } from 'vec3';
 
 import { canHarvest } from '../harvest.ts';
+import { PICKED_NOT_DUG, RIPE_AGE, cropAge, isRipe } from './farming.ts';
 import { navigateTo } from './movement.ts';
 import type { ActionContext } from './run.ts';
 import { ActionFailure } from './run.ts';
@@ -75,6 +77,16 @@ const MAX_DROPS_PER_SWEEP = 12;
  * decision, where a single stuck call consumes the whole turn.
  */
 export const DEFAULT_MINE_TIMEOUT_MS = 45_000;
+
+/** How many blocks of a crop to look at, to find ripe ones among the green. */
+const CROP_SEARCH = 64;
+/** The item that replants a harvested crop. */
+const CROP_SEED: Readonly<Record<string, string>> = {
+  wheat: 'wheat_seeds',
+  carrots: 'carrot',
+  potatoes: 'potato',
+  beetroots: 'beetroot_seeds',
+};
 
 /** Blocks agents go looking for as food. */
 const FOOD_BLOCKS = new Set([
@@ -327,14 +339,29 @@ export function createGatherActions(ctx: ActionContext) {
             // wall, up a cliff, inside a trunk. In a dense forest some log is
             // always reachable; insisting on the nearest one is what made this
             // fail where a person would simply walk to a different tree.
-            const candidates = bot
-              .findBlocks({ matching: wanted.id, maxDistance: searchRadius, count: CANDIDATES })
+            // Crops: only ripe ones. Digging unripe wheat yields a seed and
+            // destroys the plant, so the nearest four could all be green while
+            // ripe ones stand further off -- look wider, then keep the ripe.
+            const isCrop = RIPE_AGE[blockName] !== undefined;
+            const found = bot
+              .findBlocks({ matching: wanted.id, maxDistance: searchRadius, count: isCrop ? CROP_SEARCH : CANDIDATES })
               .map((pos) => bot.blockAt(pos))
               .filter((b): b is Block => b !== null && b.name === blockName);
+            const candidates = isCrop
+              ? found.filter((b) => isRipe(b.name, cropAge(b))).slice(0, CANDIDATES)
+              : found;
 
             if (candidates.length === 0) {
               // Partial success is still success: report what we got.
               if (positions.length > 0) break;
+              if (found.length > 0) {
+                const furthest = Math.max(...found.map((b) => cropAge(b) ?? 0));
+                throw new ActionFailure(
+                  'not_found',
+                  `${found.length} ${blockName} within ${searchRadius} blocks, but none ripe yet ` +
+                    `(furthest along: stage ${furthest}/${RIPE_AGE[blockName]}) -- harvesting now would destroy them for a seed`,
+                );
+              }
               const alternatives = describeAlternatives(blockName);
               throw new ActionFailure(
                 'not_found',
@@ -403,6 +430,26 @@ export function createGatherActions(ctx: ActionContext) {
               );
             }
 
+            // Berries are picked, as a player picks them, leaving the bush to
+            // fruit again. Digging it gave the same berries once and then
+            // nothing, ever, from that bush.
+            if (PICKED_NOT_DUG.has(fresh.name)) {
+              const picked = fresh;
+              try {
+                await bot.activateBlock(picked);
+              } catch {
+                // Verified from the world below.
+              }
+              await sleep(DROP_SETTLE_MS);
+              const after = bot.blockAt(picked.position);
+              if (after === null || after.name !== picked.name || (cropAge(after) ?? 0) >= (cropAge(picked) ?? 0)) {
+                if (positions.length > 0) break;
+                throw new ActionFailure('failed', `picking the ${picked.name} did nothing`);
+              }
+              positions.push({ x: picked.position.x, y: picked.position.y, z: picked.position.z });
+              continue;
+            }
+
             try {
               await bot.dig(fresh);
             } catch (err) {
@@ -423,6 +470,32 @@ export function createGatherActions(ctx: ActionContext) {
 
           const sweep = await sweepDrops(6, Math.min(8_000, finish - Date.now()), signal);
 
+          // Replant behind the harvest, as a farmer does: the seeds just came
+          // out of the crop. A field that is harvested and left bare is a field
+          // the agent has to remember to replant, and the next harvest
+          // depends on it remembering.
+          let replanted = 0;
+          const seed = CROP_SEED[blockName];
+          if (seed !== undefined && !PICKED_NOT_DUG.has(blockName)) {
+            for (const spot of positions) {
+              if (signal.aborted || Date.now() > finish) break;
+              const item = bot.inventory.items().find((i) => i.name === seed);
+              if (item === undefined) break;
+              const soil = bot.blockAt(new Vec3(spot['x'] ?? 0, (spot['y'] ?? 0) - 1, spot['z'] ?? 0));
+              const space = bot.blockAt(new Vec3(spot['x'] ?? 0, spot['y'] ?? 0, spot['z'] ?? 0));
+              if (soil === null || soil.name !== 'farmland' || space === null || space.boundingBox !== 'empty') continue;
+              if (bot.entity.position.distanceTo(soil.position.offset(0.5, 0.5, 0.5)) > 4.5) continue;
+              try {
+                await bot.equip(item, 'hand');
+                await bot.activateBlock(soil, new Vec3(0, 1, 0));
+              } catch {
+                continue;
+              }
+              await sleep(150);
+              if (bot.blockAt(space.position)?.name === blockName) replanted++;
+            }
+          }
+
           // Report what was actually collected, by item name. The model needs
           // to know it got cobblestone rather than stone -- otherwise it looks
           // for "stone" in its inventory, fails to find it, and concludes the
@@ -438,6 +511,7 @@ export function createGatherActions(ctx: ActionContext) {
             gained,
             totalGained,
             dropsVisited: sweep['dropsVisited'],
+            ...(replanted > 0 ? { replanted } : {}),
           };
         },
       );

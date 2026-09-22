@@ -129,7 +129,9 @@ export const TOOL_SCHEMAS: readonly ToolSchema[] = [
     description: 'Equip an item from the inventory.',
     parameters: object({
       item: str('Item name.'),
-      destination: nullableStr("One of hand, head, torso, legs, feet, off-hand. Default hand."),
+      destination: nullableStr(
+        'One of hand, head, torso, legs, feet, off-hand. Default hand -- or, for armour, the slot it belongs in.',
+      ),
     }),
   },
   {
@@ -203,6 +205,40 @@ export const TOOL_SCHEMAS: readonly ToolSchema[] = [
       item: nullableStr('Item name, or null to only look.'),
       count: nullableInt('How many; null takes all of that item.'),
     }),
+  },
+  {
+    name: 'plant_crop',
+    description:
+      'Plant crops on nearby ground, tilling dirt or grass into farmland ' +
+      'with a hoe first where needed. Plants wheat_seeds (from breaking ' +
+      'short_grass), carrot, potato or beetroot_seeds. Prefers ground within ' +
+      '4 blocks of water, where crops grow faster. Crops take roughly 5-30 ' +
+      'minutes to ripen; then mine_block on the crop (e.g. wheat) harvests ' +
+      'only the ripe ones and replants them. 3 wheat make bread.',
+    parameters: object({
+      seed: str('What to plant: wheat_seeds, carrot, potato or beetroot_seeds.'),
+      count: int('How many to plant.'),
+      x: nullableInt('Centre of the field; null plants around you.'),
+      z: nullableInt('Centre of the field; null plants around you.'),
+    }),
+  },
+  {
+    name: 'sleep_in_bed',
+    description:
+      'Go to the nearest bed (or put down the one you carry) and sleep in it. ' +
+      'At night this is how the night gets skipped -- but only once everyone ' +
+      'online is asleep, so it goes best when you agree on it. Using a bed ' +
+      'also makes it where you respawn when you die, even by day. Any other ' +
+      'action gets you out of bed. Refused if monsters are close.',
+    parameters: object({}),
+  },
+  {
+    name: 'wear_armor',
+    description:
+      'Put on the best armour you carry, in every slot where it is better ' +
+      'than what you are wearing. Armour is crafted: leather pieces from cow ' +
+      'leather, iron pieces from iron_ingot.',
+    parameters: object({}),
   },
   {
     name: 'set_goal',
@@ -379,6 +415,22 @@ export async function invokeTool(
           typeof args['item'] === 'string' && args['item'].trim() !== '' ? args['item'].trim() : null,
           typeof args['count'] === 'number' ? Math.trunc(args['count']) : null,
         );
+
+      case 'plant_crop': {
+        const x = args['x'];
+        const z = args['z'];
+        const near =
+          typeof x === 'number' && typeof z === 'number' && Number.isFinite(x) && Number.isFinite(z)
+            ? { x: Math.trunc(x), z: Math.trunc(z) }
+            : null;
+        return await actions.plantCrop(reqStr(args['seed'], 'seed'), reqInt(args['count'], 'count'), near);
+      }
+
+      case 'sleep_in_bed':
+        return await actions.sleepInBed();
+
+      case 'wear_armor':
+        return await actions.wearArmor();
 
       case 'set_goal': {
         const goal = reqStr(args['goal'], 'goal').slice(0, 200);
