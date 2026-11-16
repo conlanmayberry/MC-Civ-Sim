@@ -1,5 +1,43 @@
 # MC-Civ-Sim
 
+**A lab for AI societies, built in Minecraft.** Autonomous agents powered by large language models live in a persistent Minecraft world. Each one can see what's around it, decide what to do next, talk to the others and to human players, and survive on its own. Everything they do is recorded to a database, so you can study how they behave afterward.
+
+> Built solo in TypeScript on Node 22. It has 60 source modules, 28 test files and a written log of design decisions (ADRs) explaining every major trade-off.
+
+## Highlights
+
+- **LLM agents with names and roles.** Alice, Bob, Carla and Dmitri each have their own personality, memory of places, standing orders and a "voice" for in-game chat. The model picks from 21 typed tools (mine, craft, smelt, farm, fish, trade items, fight, remember places, chat, and more), and the actions run deterministically under the hood.
+- **Safety and cost controls.** A hard spend cap on API usage, rate limiting, three separate kill switches, and a `--dry-run` mode that runs the whole decision loop for $0.
+- **A real telemetry system.** Every action, chat message, injury and death is stored as an event in SQLite. Periodic state snapshots give a ground truth to check the events against. There are command-line tools to query the data, a "doctor" health check and run reports.
+- **A live dashboard.** A web view of each agent's position, inventory, personality and decision stream, plus a way to inject a thought into an agent mid-run.
+- **Replays and scenario tests.** Past runs can be replayed and compared. Scripted scenarios run agents through repeatable challenges on a sealed, resettable test platform, so a behavior change can be tested without playing for an hour.
+- **Debugging driven by evidence.** Diagnostic scripts showed that pathfinding failed on Minecraft 26.1.x (0 of 3 trips reached their goal) and worked on 1.21.8. The server version is pinned on that basis and the reasoning is written up in an ADR.
+
+## Tech stack
+
+| Area | Tools |
+|---|---|
+| Language/runtime | TypeScript, Node.js 22 (built-in `node:sqlite` and `node:test`) |
+| Game interface | Mineflayer, mineflayer-pathfinder, Paper server (SHA-256 verified) |
+| AI | OpenAI API behind a swappable provider interface, tool calling, token and cost tracking |
+| Data | SQLite event log and snapshots, JSON replays |
+| Ops | RCON scenario control, Windows launch scripts, a loopback-only server for security |
+
+## Architecture at a glance
+
+```
+LLM agent (decide) ─▶ typed tools ─▶ action layer (typed results, never throws)
+        ▲                                   │
+   observations ◀── Mineflayer bot ◀── Paper Minecraft server
+                                            │
+                     structured logger ─▶ console + SQLite telemetry ─▶ dashboard / replay / reports
+```
+
+Each layer knows nothing about the one above it. That's why adding telemetry only meant swapping where the logs go, and adding AI meant putting a decision-maker on top of the action layer without rewriting anything below it. See [docs/architecture.md](docs/architecture.md) and [docs/decisions.md](docs/decisions.md).
+
+---
+
+
 An artificial-society laboratory built on Minecraft.
 
 The long-term goal is a persistent Minecraft world inhabited by autonomous AI
