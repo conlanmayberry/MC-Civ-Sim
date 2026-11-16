@@ -242,6 +242,18 @@ export const TOOL_SCHEMAS: readonly ToolSchema[] = [
     parameters: object({}),
   },
   {
+    name: 'fish',
+    description:
+      'Fish in nearby water with a fishing_rod, standing on the bank. This is ' +
+      'the way to get fish: attacking them in the water does not work and is ' +
+      'how agents drown. A rod is 3 sticks and 2 string at a crafting table, ' +
+      'and spiders drop string. Each cast waits up to 40 seconds for a bite. ' +
+      'Cooking the catch with smelt_item more than doubles what it feeds you.',
+    parameters: object({
+      casts: nullableInt('How many fish to try for, up to 5. Default 1.'),
+    }),
+  },
+  {
     name: 'set_goal',
     description:
       'State what you are working on. It is shown to you every turn and ' +
@@ -432,6 +444,9 @@ export async function invokeTool(
 
       case 'wear_armor':
         return await actions.wearArmor();
+
+      case 'fish':
+        return await actions.fish(typeof args['casts'] === 'number' ? Math.trunc(args['casts']) : 1);
 
       case 'set_goal': {
         const goal = reqStr(args['goal'], 'goal').slice(0, 200);

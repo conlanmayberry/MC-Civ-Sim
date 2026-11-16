@@ -9,6 +9,7 @@
  *     npm run telemetry errors          what failed, and why
  *     npm run telemetry latency [all]   how long the agent takes to respond
  *     npm run telemetry compare [all]   agents side by side: cost, work, talk
+ *     npm run telemetry report [spec]   one session, end to end (latest|previous|all|<run>)
  *     npm run telemetry doctor [spec]   known failure patterns (latest|previous|all|<run>)
  *     npm run telemetry sql "SELECT..." anything else
  *
@@ -26,6 +27,7 @@ import fs from 'node:fs';
 
 import { DEFAULT_DB_PATH } from './index.ts';
 import { renderFindings, runDoctor } from './doctor.ts';
+import { buildReport, renderReport } from './report.ts';
 import { resolveRuns } from './sessions.ts';
 import type { ChatEventRow, Reply, Unanswered } from './latency.ts';
 import { distribution, pairReplies, percentile, secs, triggerKind } from './latency.ts';
@@ -472,6 +474,20 @@ switch (subcommand) {
         ` Read it next to the world, not instead of it.${RESET}`,
     );
 
+    break;
+  }
+
+  case 'report': {
+    // Everything that mattered about one session, in one screen: where the
+    // time went, what killed them, what they ate, what keeps failing.
+    const spec = args[0] ?? 'latest';
+    const runs = resolveRuns(db, spec);
+    if (runs.length === 0) {
+      console.log(`  ${DIM}(no runs match "${spec}")${RESET}`);
+      break;
+    }
+    for (const line of renderReport(buildReport(db, runs))) console.log(line);
+    console.log('');
     break;
   }
 

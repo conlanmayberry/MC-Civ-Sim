@@ -25,6 +25,8 @@ import { toPosition } from './types.ts';
 const SEARCH_RADIUS = 16;
 const USE_RANGE = 2;
 const WALK_BUDGET_MS = 20_000;
+/** Past this the walk plainly failed; inside it, let the server decide. */
+const REFUSE_BEYOND = 6;
 /** Vanilla: 10s an item in a furnace, 5s in a smoker or blast furnace. */
 const FURNACE_ITEM_MS = 10_000;
 const FAST_ITEM_MS = 5_000;
@@ -93,9 +95,31 @@ export function createContainerActions(ctx: ActionContext) {
     if (bot.entity.position.distanceTo(block.position.offset(0.5, 0.5, 0.5)) <= USE_RANGE + 1.5) return;
     const p = block.position;
     await navigateTo(bot, p.x + 0.5, p.y, p.z + 0.5, USE_RANGE, WALK_BUDGET_MS, signal);
+    // Measured feet to block centre, while the server measures from the eyes:
+    // chests were refused at "4.7m away" that were well within reach. Past
+    // this, let the server be the judge -- opening it simply fails if it is
+    // too far.
     const distance = bot.entity.position.distanceTo(p.offset(0.5, 0.5, 0.5));
-    if (distance > 4.5) {
+    if (distance > REFUSE_BEYOND) {
       throw new ActionFailure('unreachable', `could not get to the ${block.name} at ${p.x},${p.y},${p.z} (${distance.toFixed(1)}m away)`);
+    }
+  }
+
+  /**
+   * Open a container, retrying once.
+   *
+   * "Event windowOpen did not fire within timeout of 20000ms" -- mineflayer
+   * waiting for a window the server never sent. A second attempt costs a
+   * moment; losing the action loses the turn.
+   */
+  async function open(block: Block): Promise<Awaited<ReturnType<typeof bot.openContainer>>> {
+    try {
+      return await bot.openContainer(block);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/windowOpen|timeout/i.test(message)) throw err;
+      await sleep(600);
+      return bot.openContainer(block);
     }
   }
 
@@ -258,7 +282,7 @@ export function createContainerActions(ctx: ActionContext) {
           );
         }
         await walkTo(block, signal);
-        const chest = await bot.openContainer(block);
+        const chest = await open(block);
         try {
           const item = bot.inventory.items().find((i) => i.name === itemName);
           if (item === undefined) throw new ActionFailure('insufficient_items', `no ${itemName} in inventory`);
@@ -298,7 +322,7 @@ export function createContainerActions(ctx: ActionContext) {
           throw new ActionFailure('not_found', `no chest or barrel within ${SEARCH_RADIUS} blocks`);
         }
         await walkTo(block, signal);
-        const chest = await bot.openContainer(block);
+        const chest = await open(block);
         try {
           const contents = chest.containerItems();
           if (itemName === null) {

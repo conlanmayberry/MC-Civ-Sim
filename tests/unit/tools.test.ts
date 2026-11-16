@@ -71,6 +71,8 @@ describe('tool schemas', () => {
       'craft_item',
       'eat_food',
       'equip_item',
+      // Casts a line into water in the world.
+      'fish',
       'follow_player',
       'give_item',
       'mine_block',
@@ -174,6 +176,10 @@ function stubActions(record: string[]): Actions {
     wearArmor: async () => {
       record.push('wearArmor()');
       return ok('wear_armor');
+    },
+    fish: async (casts) => {
+      record.push(`fish(${String(casts)})`);
+      return ok('fish');
     },
     busy: () => false,
     current: () => null,

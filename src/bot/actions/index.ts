@@ -18,6 +18,7 @@ import { createCombatActions } from './combat.ts';
 import { createContainerActions } from './containers.ts';
 import { createCraftActions } from './craft.ts';
 import { createFarmingActions } from './farming.ts';
+import { createFishingActions } from './fishing.ts';
 import { createGatherActions } from './gather.ts';
 import { createMovementActions, trackPlayers } from './movement.ts';
 import { createRestActions, leaveBed } from './rest.ts';
@@ -47,6 +48,7 @@ export interface Actions {
   plantCrop: ReturnType<typeof createFarmingActions>['plantCrop'];
   sleepInBed: ReturnType<typeof createRestActions>['sleepInBed'];
   wearArmor: ReturnType<typeof createArmorActions>['wearArmor'];
+  fish: ReturnType<typeof createFishingActions>['fish'];
   /** True while an action holds the bot. */
   busy: () => boolean;
   /** Name of the running action, if any. */
@@ -87,9 +89,16 @@ export function createActions(bot: Bot, log: Logger): Actions {
   const containers = createContainerActions(ctx);
   const farming = createFarmingActions(ctx);
   const rest = createRestActions(ctx);
+  const fishing = createFishingActions(ctx);
   const armor = createArmorActions(ctx);
   const reflexes = startReflexes(bot, runner, log);
   trackPlayers(bot);
+  // Dying ends whatever was being done. The body is at the respawn point now,
+  // so an action that carries on is acting on a world it is no longer in:
+  // craft_item reported "cannot reach the crafting table (reached, 16.7m
+  // away)" ten times in one session, which is what an approach looks like
+  // when the bot dies just after arriving.
+  bot.on('death', () => runner.interrupt('you died, so this was cut short; you are back at your respawn point'));
 
   return {
     moveTo: movement.moveTo,
@@ -109,6 +118,7 @@ export function createActions(bot: Bot, log: Logger): Actions {
     plantCrop: farming.plantCrop,
     sleepInBed: rest.sleepInBed,
     wearArmor: armor.wearArmor,
+    fish: fishing.fish,
     busy: runner.busy,
     current: runner.current,
     interrupt: runner.interrupt,

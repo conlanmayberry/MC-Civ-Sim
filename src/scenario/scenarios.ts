@@ -851,6 +851,71 @@ const noDigUnderfoot: Scenario = {
   },
 };
 
+/** Food from water without going into it. */
+const fishFromBank: Scenario = {
+  id: 'fish_from_bank',
+  title: 'fish casts into a pool from dry land and catches something',
+  live: false,
+  timeoutMs: 150_000,
+  async run({ arena }) {
+    // A pool walled in at floor level, so the water stays where it is put.
+    // The bot casts from a few blocks back: standing on the rim itself, level
+    // with the water, the line lands on the rim instead of in the pool.
+    await arena.fill(at(3, -3), at(8, 3), 'glass');
+    await arena.fill(at(4, -2), at(7, 2), 'water');
+    const a = await arena.spawn('ScenAlpha', at(0, 0));
+    await arena.give(a.name, 'fishing_rod', 1);
+
+    const caught = await a.actions.fish(1);
+    // A catch can land just out of reach, and the action says so rather than
+    // swimming after it; collect_items is the follow-up a model would make.
+    if (!caught.ok && caught.error?.message.includes('bite') !== true) {
+      return fail(`fish: ${describeFailure(caught)}`);
+    }
+    if (!caught.ok) await a.actions.collectNearbyItems(10);
+
+    const FISH = ['cod', 'salmon', 'pufferfish', 'tropical_fish'];
+    const held = FISH.map((f) => countItem(a.bot, f)).reduce((x, y) => x + y, 0);
+    const deep =
+      a.bot.blockAt(a.bot.entity.position)?.name === 'water' &&
+      a.bot.blockAt(a.bot.entity.position.offset(0, -1, 0))?.name === 'water';
+    if (deep) return fail('ended up swimming in the pool');
+    return held > 0
+      ? pass(`landed ${held} fish from the bank${caught.ok ? ` in ${(caught.durationMs / 1000).toFixed(0)}s` : ' (collected after the catch fell short)'}`)
+      : fail(`no fish in the inventory; fish said ${describeFailure(caught)}`);
+  },
+};
+
+/**
+ * Dying ends the action.
+ *
+ * craft_item reported "cannot reach the crafting table (reached, 16.7m away)"
+ * ten times in one session: the bot had arrived, died, and respawned, while
+ * the action carried on measuring against a world it was no longer in.
+ */
+const deathEndsAction: Scenario = {
+  id: 'death_ends_action',
+  title: 'an action in progress is cut short when the agent dies',
+  live: false,
+  timeoutMs: 60_000,
+  async run({ arena }) {
+    const a = await arena.spawn('ScenAlpha', at(-12, -12));
+    const far = at(12, 12);
+    const walking = a.actions.moveTo(far.x, far.y, far.z, 1);
+    await sleep(1_500);
+    await arena.run(`kill ${a.name}`);
+
+    const result = await Promise.race([
+      walking,
+      sleep(15_000).then(() => null),
+    ]);
+    if (result === null) return fail('the move was still running 15s after the agent died');
+    return !result.ok && result.error?.code === 'interrupted'
+      ? pass(`move ended as interrupted: ${result.error.message}`)
+      : fail(`expected an interruption, got ${describeFailure(result)}`);
+  },
+};
+
 // --- live scenarios ----------------------------------------------------------------
 
 interface LiveAgent {
@@ -1092,6 +1157,8 @@ export const SCENARIOS: readonly Scenario[] = [
   escapePit,
   huntGuidance,
   noDigUnderfoot,
+  fishFromBank,
+  deathEndsAction,
   agentsAnswerGroupCall,
   agentFeedsHungryPeer,
   agentFightsBack,
